@@ -1,0 +1,95 @@
+export interface FileEntry {
+  name: string
+  path: string
+  isDirectory: boolean
+}
+
+export interface OpenTab {
+  path: string
+  name: string
+  content: string
+  savedContent: string
+  isDirty: boolean
+  isUntitled: boolean
+}
+
+export interface ChatImage {
+  mimeType: string
+  data: string
+  name?: string
+  width?: number
+  height?: number
+}
+
+export interface ChatMessage {
+  role: 'system' | 'user' | 'assistant'
+  content: string
+  images?: ChatImage[]
+}
+
+export type SidebarView = 'explorer' | 'search' | 'sourceControl' | 'run' | 'extensions' | 'settings'
+
+export interface GitFileChange {
+  path: string
+  index: string
+  workingTree: string
+  staged: boolean
+}
+
+export interface GitStatus {
+  isRepo: boolean
+  branch: string | null
+  ahead: number
+  behind: number
+  staged: GitFileChange[]
+  unstaged: GitFileChange[]
+  untracked: GitFileChange[]
+}
+
+export interface GitCommit {
+  hash: string
+  shortHash: string
+  author: string
+  date: string
+  message: string
+  parents: string[]
+  refs: string[]
+}
+
+export interface SearchMatch {
+  file: string
+  line: number
+  preview: string
+  matchStart: number
+  matchLength: number
+}
+
+export interface RecentFolder {
+  path: string
+  name: string
+  lastOpened: number
+}
+
+export const WELCOME_TAB_ID = '__welcome__'
+
+export type AgentMode = 'ask' | 'edit' | 'auto'
+
+export interface FileEditEvent {
+  path: string
+  relativePath: string
+  oldContent: string | null
+  newContent: string
+}
+
+export interface PermissionRequestEvent {
+  permissionId: string
+  command: string
+  cwd: string
+}
+
+export interface CommandResultEvent {
+  permissionId: string
+  command: string
+  output: string
+  error: boolean
+}
