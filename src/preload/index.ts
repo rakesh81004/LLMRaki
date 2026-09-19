@@ -326,7 +326,9 @@ const api = {
     saveConversation: (key: string, id: string, messages: unknown[]): Promise<void> =>
       ipcRenderer.invoke('chatHistory:saveConversation', key, id, messages),
     deleteConversation: (key: string, id: string): Promise<void> =>
-      ipcRenderer.invoke('chatHistory:deleteConversation', key, id)
+      ipcRenderer.invoke('chatHistory:deleteConversation', key, id),
+    renameConversation: (key: string, id: string, title: string): Promise<void> =>
+      ipcRenderer.invoke('chatHistory:renameConversation', key, id, title)
   }
 }
 

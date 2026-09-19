@@ -17,10 +17,11 @@ import {
   CopyIcon,
   FileIcon,
   PlusIcon,
-  SearchIcon,
   StopIcon
 } from './Icons'
 import FileTypeBadge from './FileTypeBadge'
+import toolbarStripImage from '../assets/toolbar-strip.jpg'
+import appLogo from '../assets/app-logo.png'
 import DiffLinesView from './DiffLinesView'
 import { diffLines, opsToDiffLines, diffStats } from '../lineDiff'
 
@@ -112,6 +113,13 @@ interface DisplayMessage extends ChatMessage {
   fileEdits?: DisplayFileEdit[]
   permissionRequests?: DisplayPermissionRequest[]
   autoRuns?: CommandAutoRunEvent[]
+  mode?: AgentMode
+}
+
+const MODE_RGB: Record<AgentMode, string> = {
+  ask: '52, 211, 153',
+  edit: '168, 85, 247',
+  auto: '255, 140, 0'
 }
 
 function formatTime(ts: number): string {
@@ -318,11 +326,13 @@ export default function ChatPanel({
   const [conversationId, setConversationId] = useState<string>(() => makeId())
   const [conversationList, setConversationList] = useState<ConversationSummary[]>([])
   const [historyMenuOpen, setHistoryMenuOpen] = useState(false)
+  const [renamingId, setRenamingId] = useState<string | null>(null)
+  const [renameValue, setRenameValue] = useState('')
   const [input, setInput] = useState('')
   const [pendingImages, setPendingImages] = useState<ChatImage[]>([])
   const [streaming, setStreaming] = useState(false)
   const [searching, setSearching] = useState(false)
-  const [searchCodebase, setSearchCodebase] = useState(true)
+  const [searchCodebase] = useState(true)
   const [includeFile, setIncludeFile] = useState(false)
   const [provider, setProvider] = useState<Provider>('ollama')
   const [hasApiKey, setHasApiKey] = useState<boolean | null>(null)
@@ -388,20 +398,10 @@ export default function ChatPanel({
     window.api.chatHistory.listConversations(historyKey).then((list) => {
       if (cancelled) return
       setConversationList(list)
-      if (list.length > 0 && rootFolder) {
-        const mostRecent = list[0]
-        window.api.chatHistory.getConversation(historyKey, mostRecent.id).then((loaded) => {
-          if (cancelled) return
-          setMessages(loaded as DisplayMessage[])
-          setConversationId(mostRecent.id)
-          loadedRef.current = `${historyKey}::${mostRecent.id}`
-        })
-      } else {
-        const freshId = makeId()
-        setMessages([])
-        setConversationId(freshId)
-        loadedRef.current = `${historyKey}::${freshId}`
-      }
+      const freshId = makeId()
+      setMessages([])
+      setConversationId(freshId)
+      loadedRef.current = `${historyKey}::${freshId}`
     })
     return () => {
       cancelled = true
@@ -438,6 +438,20 @@ export default function ChatPanel({
     setConversationId(freshId)
     loadedRef.current = `${historyKey}::${freshId}`
     setHistoryMenuOpen(false)
+  }
+
+  function beginRename(c: ConversationSummary): void {
+    setRenamingId(c.id)
+    setRenameValue(c.title)
+  }
+
+  function commitRename(): void {
+    const id = renamingId
+    const title = renameValue.trim()
+    setRenamingId(null)
+    if (!id || !title) return
+    setConversationList((prev) => prev.map((c) => (c.id === id ? { ...c, title } : c)))
+    window.api.chatHistory.renameConversation(historyKey, id, title)
   }
 
   function loadConversation(id: string): void {
@@ -536,7 +550,8 @@ export default function ChatPanel({
       displayContent: trimmed,
       contextFiles: contextFiles.length > 0 ? contextFiles : undefined,
       images: imagesToSend.length > 0 ? imagesToSend : undefined,
-      timestamp: Date.now()
+      timestamp: Date.now(),
+      mode: agentMode
     }
 
     const history: ChatMessage[] = messages.map(({ role, content, images }) => ({
@@ -787,16 +802,7 @@ export default function ChatPanel({
   return (
     <div className="chat-panel" data-mode={agentMode} style={{ width }}>
       <div className="chat-header">
-        <span>AI Chat</span>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <button
-            className="btn-secondary"
-            style={{ padding: '2px 7px', fontSize: 12 }}
-            title="New chat"
-            onClick={startNewChat}
-          >
-            +
-          </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <div style={{ position: 'relative' }} ref={historyMenuRef}>
             <button
               className="btn-secondary"
@@ -814,7 +820,7 @@ export default function ChatPanel({
                 style={{
                   position: 'absolute',
                   top: 26,
-                  right: 0,
+                  left: 0,
                   width: 260,
                   maxHeight: 320,
                   overflowY: 'auto',
@@ -836,23 +842,61 @@ export default function ChatPanel({
                 {conversationList.map((c) => (
                   <div
                     key={c.id}
-                    onClick={() => loadConversation(c.id)}
+                    onClick={() => renamingId !== c.id && loadConversation(c.id)}
                     className={`tree-item ${c.id === conversationId ? 'selected' : ''}`}
                     style={{ alignItems: 'flex-start', padding: '8px 10px' }}
                   >
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div
-                        style={{
-                          fontSize: 12,
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap'
-                        }}
-                      >
-                        {c.title}
-                      </div>
+                      {renamingId === c.id ? (
+                        <input
+                          autoFocus
+                          value={renameValue}
+                          onClick={(e) => e.stopPropagation()}
+                          onChange={(e) => setRenameValue(e.target.value)}
+                          onBlur={commitRename}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') commitRename()
+                            if (e.key === 'Escape') setRenamingId(null)
+                          }}
+                          style={{
+                            width: '100%',
+                            fontSize: 12,
+                            background: 'var(--bg-input)',
+                            border: '1px solid var(--accent-bright)',
+                            borderRadius: 4,
+                            color: 'var(--text-primary)',
+                            padding: '1px 4px'
+                          }}
+                        />
+                      ) : (
+                        <div
+                          onDoubleClick={(e) => {
+                            e.stopPropagation()
+                            beginRename(c)
+                          }}
+                          title="Double-click to rename"
+                          style={{
+                            fontSize: 12,
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap'
+                          }}
+                        >
+                          {c.title}
+                        </div>
+                      )}
                       <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>{timeAgo(c.updatedAt)}</div>
                     </div>
+                    <button
+                      className="close-btn"
+                      title="Rename"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        beginRename(c)
+                      }}
+                    >
+                      ✎
+                    </button>
                     <button className="close-btn" title="Delete" onClick={(e) => deleteConversation(c.id, e)}>
                       ✕
                     </button>
@@ -861,19 +905,21 @@ export default function ChatPanel({
               </div>
             )}
           </div>
+          <span>AI Chat</span>
         </div>
+        <button
+          className="btn-secondary"
+          style={{ padding: '2px 7px', fontSize: 12 }}
+          title="New chat"
+          onClick={startNewChat}
+        >
+          +
+        </button>
       </div>
 
       <div className="chat-messages">
         {messages.length === 0 && (
-          <>
-            <div className="chat-message system-note">
-              Ask about your code, request a refactor, or paste an error message.
-              {rootFolder &&
-                (provider === 'gemini'
-                  ? ' Gemini can search and read files from your project on its own as it answers.'
-                  : ' Relevant files from your project are found and included automatically.')}
-            </div>
+          <div className="chat-empty-state">
             {!rootFolder && conversationList.length > 0 && (
               <div className="chat-recent-list">
                 <div className="chat-recent-heading">Recent chats</div>
@@ -885,7 +931,19 @@ export default function ChatPanel({
                 ))}
               </div>
             )}
-          </>
+            <div className="chat-empty-brand">
+              <img src={appLogo} alt="LLMRaki" className="chat-empty-logo" />
+              <div className="chat-empty-title">LLMRaki</div>
+              <div className="chat-empty-greeting">Welcome Back</div>
+            </div>
+            <div className="chat-message system-note">
+              Ask about your code, request a refactor, or paste an error message.
+              {rootFolder &&
+                (provider === 'gemini'
+                  ? ' Gemini can search and read files from your project on its own as it answers.'
+                  : ' Relevant files from your project are found and included automatically.')}
+            </div>
+          </div>
         )}
         {modelSwitchNotice && (
           <div className="chat-message system-note" style={{ color: '#e0a030' }}>
@@ -896,8 +954,16 @@ export default function ChatPanel({
           const isLast = i === messages.length - 1
           const readCount = m.progressSteps?.filter((s) => s.startsWith('Read')).length ?? 0
           const searchCount = m.progressSteps?.filter((s) => s.startsWith('Searched')).length ?? 0
+          const msgModeStyle =
+            m.role === 'user' && m.mode
+              ? ({ '--msg-mode-rgb': MODE_RGB[m.mode] } as React.CSSProperties)
+              : undefined
           return (
-            <div key={i} className={`chat-message ${m.role === 'user' ? 'user' : 'assistant'}`}>
+            <div
+              key={i}
+              className={`chat-message ${m.role === 'user' ? 'user' : 'assistant'}`}
+              style={msgModeStyle}
+            >
               {m.images && m.images.length > 0 && (
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 6 }}>
                   {m.images.map((img, idx) => (
@@ -1082,7 +1148,12 @@ export default function ChatPanel({
           )
         )}
 
-        <div className="chat-toolbar">
+        <div
+          className="chat-toolbar chat-toolbar-strip"
+          style={{
+            backgroundImage: `linear-gradient(rgba(0, 0, 0, 0.5), rgba(0, 0, 0, 0.5)), url(${toolbarStripImage})`
+          }}
+        >
           <div className="chat-toolbar-group">
             <div className="agent-mode-row">
               {(['ask', 'edit', 'auto'] as AgentMode[]).map((m) => {
@@ -1123,19 +1194,6 @@ export default function ChatPanel({
             >
               <PlusIcon />
             </button>
-            {rootFolder && (
-              <button
-                className={`chat-toolbar-icon-btn ${searchCodebase ? 'active' : ''}`}
-                title={
-                  provider === 'gemini'
-                    ? 'Let Gemini search the codebase'
-                    : 'Search codebase for relevant files'
-                }
-                onClick={() => setSearchCodebase((v) => !v)}
-              >
-                <SearchIcon />
-              </button>
-            )}
             {activeFileName && (
               <button
                 className={`chat-toolbar-icon-btn ${includeFile ? 'active' : ''}`}
@@ -1146,7 +1204,7 @@ export default function ChatPanel({
               </button>
             )}
           </div>
-          <div className="chat-toolbar-group">
+          <div className="chat-toolbar-group chat-toolbar-group-end">
             {streaming && (
               <span className="chat-toolbar-status">
                 <ClockIcon /> {elapsedSeconds}s

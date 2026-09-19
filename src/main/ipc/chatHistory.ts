@@ -14,6 +14,7 @@ export interface ConversationSummary {
 
 interface Conversation extends ConversationSummary {
   messages: unknown[]
+  titleCustom?: boolean
 }
 
 interface LegacyEntry {
@@ -101,10 +102,12 @@ export function registerChatHistoryHandlers(): void {
     async (_e, key: string, id: string, messages: unknown[]) => {
       if (messages.length === 0) return
       const store = await readStore()
+      const existing = getConversations(store, key).find((c) => c.id === id)
       const conversations = getConversations(store, key).filter((c) => c.id !== id)
       conversations.unshift({
         id,
-        title: deriveTitle(messages),
+        title: existing?.titleCustom ? existing.title : deriveTitle(messages),
+        titleCustom: existing?.titleCustom,
         updatedAt: Date.now(),
         messages: messages.slice(-MAX_MESSAGES_PER_CONVERSATION)
       })
@@ -129,4 +132,18 @@ export function registerChatHistoryHandlers(): void {
     store[key] = { conversations }
     await writeStore(store)
   })
+
+  ipcMain.handle(
+    'chatHistory:renameConversation',
+    async (_e, key: string, id: string, title: string) => {
+      const store = await readStore()
+      const conversations = getConversations(store, key)
+      const target = conversations.find((c) => c.id === id)
+      if (!target) return
+      target.title = title.trim().slice(0, 60) || target.title
+      target.titleCustom = true
+      store[key] = { conversations }
+      await writeStore(store)
+    }
+  )
 }

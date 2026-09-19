@@ -2,6 +2,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { ReactElement, ReactNode } from 'react'
 import CodeBlock from './CodeBlock'
+import FileTypeBadge from './FileTypeBadge'
 
 interface Props {
   content: string
@@ -40,13 +41,15 @@ export default function Markdown({ content, rootFolder, onOpenFile }: Props): JS
             if (match) {
               const [, relPath, lineStr] = match
               const line = lineStr ? parseInt(lineStr, 10) : undefined
+              const fileName = relPath.split(/[/\\]/).pop() ?? relPath
               return (
                 <button
                   className="file-ref-link"
                   title={`Open ${relPath}${line ? `:${line}` : ''}`}
                   onClick={() => onOpenFile!(joinPath(rootFolder!, relPath), line)}
                 >
-                  📄 {text}
+                  <FileTypeBadge fileName={fileName} />
+                  <span className="file-ref-text">{text}</span>
                 </button>
               )
             }

@@ -58,6 +58,16 @@ button {
     color 0.15s ease,
     border-color 0.15s ease;
 }
+/* The browser's default focus rectangle is square and sits behind rounded
+   buttons/pills as a stray box — replace it with a visible-but-matching ring
+   only for keyboard focus, and drop it entirely for a mouse click. */
+button:focus {
+  outline: none;
+}
+button:focus-visible {
+  outline: 2px solid rgba(var(--glow-rgb), 0.6);
+  outline-offset: 2px;
+}
 
 input,
 textarea {
@@ -458,6 +468,29 @@ textarea:focus {
   text-align: center;
 }
 
+.item-sub {
+  font-size: 10.5px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.close-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  padding: 2px;
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.close-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
 .editor-area {
   flex: 1;
   display: flex;
@@ -501,18 +534,6 @@ textarea:focus {
   flex-shrink: 0;
 }
 
-.editor-tab .close-btn {
-  background: none;
-  border: none;
-  color: var(--text-muted);
-  padding: 2px;
-  border-radius: 3px;
-  display: flex;
-}
-.editor-tab .close-btn:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
 
 .editor-empty {
   flex: 1;
@@ -611,8 +632,8 @@ textarea:focus {
 }
 
 .chat-message.user {
-  background: rgba(var(--user-bubble-rgb), 0.32);
-  border: 1px solid rgba(var(--user-bubble-rgb), 0.55);
+  background: rgba(var(--msg-mode-rgb, var(--user-bubble-rgb)), 0.32);
+  border: 1px solid rgba(var(--msg-mode-rgb, var(--user-bubble-rgb)), 0.55);
   border-radius: 16px;
   align-self: flex-end;
   max-width: 88%;
@@ -709,6 +730,9 @@ textarea:focus {
   flex-shrink: 0;
 }
 .file-ref-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   background: rgba(var(--glow-rgb), 0.07);
   border: 1px solid rgba(var(--glow-rgb), 0.2);
   border-radius: 3px;
@@ -717,10 +741,14 @@ textarea:focus {
   font-size: 12px;
   color: var(--accent-bright);
   cursor: pointer;
+  max-width: 100%;
+  vertical-align: middle;
+}
+.file-ref-text {
   overflow-wrap: anywhere;
   word-break: break-word;
   white-space: normal;
-  max-width: 100%;
+  min-width: 0;
 }
 .file-ref-link:hover {
   background: rgba(var(--glow-rgb), 0.14);
@@ -774,10 +802,48 @@ textarea:focus {
   align-self: center;
 }
 
+.chat-empty-state {
+  flex: 1;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+}
+
+.chat-empty-brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin: 18px 0;
+  align-self: center;
+  animation: welcome-fade-up 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.chat-empty-logo {
+  width: 68px;
+  height: 68px;
+  border-radius: 16px;
+}
+.chat-empty-title {
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
+}
+.chat-empty-greeting {
+  font-size: 12.5px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
 .chat-recent-list {
-  align-self: stretch;
-  margin-top: 12px;
+  align-self: center;
+  margin-bottom: 24px;
   padding: 0 8px;
+  max-width: 420px;
+  width: 100%;
 }
 .chat-recent-heading {
   font-size: 10px;
@@ -932,15 +998,15 @@ textarea:focus {
 
 .chat-composer-card {
   background: var(--bg-input);
-  border: 1px solid var(--hairline);
+  border: 1px solid rgba(var(--mode-glow-rgb, var(--glow-rgb)), 0.35);
   border-radius: 16px;
   padding: 10px 12px 8px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 0 10px rgba(var(--mode-glow-rgb, var(--glow-rgb)), 0.12);
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 .chat-composer-card:focus-within {
-  border-color: rgba(var(--glow-rgb), 0.25);
-  box-shadow: 0 0 14px rgba(var(--glow-rgb), 0.09);
+  border-color: rgba(var(--mode-glow-rgb, var(--glow-rgb)), 0.6);
+  box-shadow: 0 0 16px rgba(var(--mode-glow-rgb, var(--glow-rgb)), 0.25);
 }
 
 .chat-input-area textarea {
@@ -1128,9 +1194,9 @@ textarea:focus {
 }
 
 .agent-mode-btn {
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid transparent;
-  color: var(--text-muted);
+  background: var(--bg-input);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.5);
   border-radius: 999px;
   padding: 3px 11px;
   font-size: 11px;
@@ -1145,26 +1211,25 @@ textarea:focus {
    variables — which mode a response came from: Ask (blue, read-only),
    Edit (amber, supervised writes), Auto (violet, autonomous). */
 .chat-panel[data-mode='ask'] {
-  --mode-color: var(--accent-bright);
-  --mode-glow-rgb: var(--glow-rgb);
+  --mode-color: #34d399;
+  --mode-glow-rgb: 52, 211, 153;
 }
 .chat-panel[data-mode='edit'] {
-  --mode-color: #e0a030;
-  --mode-glow-rgb: 224, 160, 48;
+  --mode-color: #a855f7;
+  --mode-glow-rgb: 168, 85, 247;
 }
 .chat-panel[data-mode='auto'] {
-  --mode-color: #c77dff;
-  --mode-glow-rgb: 199, 125, 255;
+  --mode-color: #ff8c00;
+  --mode-glow-rgb: 255, 140, 0;
 }
 
 .agent-mode-btn.active {
-  background: rgba(var(--mode-glow-rgb), 0.1);
-  border-color: rgba(var(--mode-glow-rgb), 0.4);
+  background: var(--bg-active);
+  border-color: var(--mode-color);
   color: var(--mode-color);
-  box-shadow: 0 0 10px rgba(var(--mode-glow-rgb), 0.2);
+  box-shadow: 0 0 10px rgba(var(--mode-glow-rgb), 0.35);
 }
 .agent-mode-btn:disabled {
-  opacity: 0.4;
   cursor: not-allowed;
 }
 
@@ -1238,15 +1303,28 @@ textarea:focus {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   margin-top: 8px;
   gap: 8px;
+}
+
+.chat-toolbar-strip {
+  background-size: cover;
+  background-position: center 60%;
+  border-radius: 10px;
+  padding: 5px 6px;
 }
 
 .chat-toolbar-group {
   display: flex;
   align-items: center;
   gap: 4px;
-  min-width: 0;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+.chat-toolbar-group-end {
+  margin-left: auto;
+  justify-content: flex-end;
 }
 
 .chat-toolbar-icon-btn {
@@ -1256,8 +1334,8 @@ textarea:focus {
   width: 26px;
   height: 26px;
   border-radius: 6px;
-  border: 1px solid transparent;
-  background: none;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--bg-input);
   color: var(--text-muted);
   flex-shrink: 0;
 }
@@ -1307,14 +1385,14 @@ textarea:focus {
   height: 28px;
   border-radius: 50%;
   border: none;
-  background: var(--accent-bright);
+  background: var(--mode-color, var(--accent-bright));
   color: #101725;
   flex-shrink: 0;
-  box-shadow: 0 0 10px rgba(var(--glow-rgb), 0.25);
+  box-shadow: 0 0 10px rgba(var(--mode-glow-rgb, var(--glow-rgb)), 0.25);
 }
 .chat-send-btn:hover {
-  background: var(--accent-hover);
-  box-shadow: 0 0 16px rgba(var(--glow-rgb), 0.3);
+  filter: brightness(1.12);
+  box-shadow: 0 0 16px rgba(var(--mode-glow-rgb, var(--glow-rgb)), 0.35);
 }
 .chat-send-btn:disabled {
   background: var(--bg-active);
@@ -1597,11 +1675,6 @@ textarea:focus {
 }
 
 .palette-item .item-sub {
-  font-size: 10.5px;
-  color: var(--text-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
   flex: 1;
   min-width: 0;
 }
