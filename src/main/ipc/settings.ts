@@ -11,12 +11,12 @@ export interface RecentFolder {
 export type Provider = 'openai' | 'ollama' | 'gemini'
 
 interface StoredSettings {
-  apiKeyEncrypted?: string // base64, OpenAI
+  apiKeyEncrypted?: string
   model?: string
   recentFolders?: RecentFolder[]
   provider?: Provider
   ollamaModel?: string
-  geminiApiKeyEncrypted?: string // base64
+  geminiApiKeyEncrypted?: string
   geminiModel?: string
 }
 
@@ -50,7 +50,7 @@ export function registerSettingsHandlers(): void {
     if (safeStorage.isEncryptionAvailable()) {
       settings.apiKeyEncrypted = safeStorage.encryptString(apiKey).toString('base64')
     } else {
-      // Fallback: still store it, but this path is rare (OS keychain unavailable)
+      // Rare fallback: OS keychain unavailable, so store base64 instead of real encryption.
       settings.apiKeyEncrypted = Buffer.from(apiKey, 'utf-8').toString('base64')
     }
     await writeSettings(settings)
@@ -118,7 +118,7 @@ export function registerSettingsHandlers(): void {
 
   ipcMain.handle('settings:getGeminiModel', async () => {
     const settings = await readSettings()
-    return settings.geminiModel ?? 'gemini-2.0-flash'
+    return settings.geminiModel ?? 'gemini-3.6-flash'
   })
 
   ipcMain.handle('settings:setGeminiModel', async (_e, model: string) => {
@@ -191,5 +191,5 @@ export async function getDecryptedGeminiKey(): Promise<string | null> {
 
 export async function getGeminiModel(): Promise<string> {
   const settings = await readSettings()
-  return settings.geminiModel ?? 'gemini-2.0-flash'
+  return settings.geminiModel ?? 'gemini-3.6-flash'
 }

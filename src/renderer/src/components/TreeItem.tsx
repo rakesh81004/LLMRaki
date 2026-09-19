@@ -42,9 +42,7 @@ export default function TreeItem({
     setExpanded(!expanded)
   }
 
-  // Silently re-fetch this folder's children after any file operation
-  // elsewhere in the tree (create/rename/delete/copy/move), but only if
-  // it's already been expanded — otherwise leave it lazily unloaded.
+  // Re-fetches this folder's children on any file-tree change elsewhere, but only if already expanded — otherwise stays lazily unloaded.
   useEffect(() => {
     if (!mountedRef.current) {
       mountedRef.current = true

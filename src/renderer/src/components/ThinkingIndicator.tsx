@@ -5,12 +5,11 @@ interface Props {
 export default function ThinkingIndicator({ label }: Props): JSX.Element {
   return (
     <span className="thinking-indicator">
-      {label}
-      <span className="thinking-dots">
-        <span />
-        <span />
-        <span />
+      <span className="thinking-orb-wrap" aria-hidden="true">
+        <span className="thinking-orb-glow" />
+        <span className="thinking-orb" />
       </span>
+      {label}
     </span>
   )
 }

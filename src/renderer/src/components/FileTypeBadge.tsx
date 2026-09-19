@@ -1,5 +1,3 @@
-// Filenames matched exactly (case-insensitive) before falling back to extension —
-// covers well-known files that have no useful extension of their own.
 const SPECIAL_FILES: Record<string, { label: string; color: string }> = {
   dockerfile: { label: 'DK', color: '#0db7ed' },
   makefile: { label: 'MK', color: '#8a8a8a' },

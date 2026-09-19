@@ -4,6 +4,7 @@ import { buildGitGraph, parseRefs, REF_KIND_COLORS, RefKind } from '../gitGraph'
 import { parseUnifiedDiff, FileDiff } from '../diffParser'
 import DiffLinesView from './DiffLinesView'
 import { diffLines, opsToDiffLines, diffStats } from '../lineDiff'
+import FileTypeBadge from './FileTypeBadge'
 
 interface Props {
   rootFolder: string | null
@@ -47,10 +48,7 @@ export default function SourceControlPanel({
     }
   }
 
-  // `git rev-parse` only looks upward from a directory, never into subfolders —
-  // so if the user opened an outer folder whose actual `.git` lives one level
-  // down (e.g. a monorepo-style layout), find that nested repo instead of just
-  // reporting "not a repository."
+  // `git rev-parse` only looks upward from a directory, so if the actual `.git` lives in a subfolder (e.g. monorepo layout), search for that nested repo instead of reporting "not a repository."
   useEffect(() => {
     if (!rootFolder) {
       setGitRoot(null)
@@ -121,6 +119,26 @@ export default function SourceControlPanel({
     refresh()
   }
 
+  async function handleUnstageAll(): Promise<void> {
+    if (!gitRoot || !status) return
+    await Promise.all(status.staged.map((f) => window.api.git.unstage(gitRoot, f.path)))
+    refresh()
+  }
+
+  async function handleStageAll(): Promise<void> {
+    if (!gitRoot) return
+    await window.api.git.stageAll(gitRoot)
+    refresh()
+  }
+
+  async function handleDiscardAll(): Promise<void> {
+    if (!gitRoot || !status) return
+    if (status.unstaged.length === 0) return
+    if (!window.confirm(`Discard changes to ${status.unstaged.length} file(s)? This cannot be undone.`)) return
+    await Promise.all(status.unstaged.map((f) => window.api.git.discard(gitRoot, f.path)))
+    refresh()
+  }
+
   async function handleViewDiff(path: string, staged: boolean): Promise<void> {
     if (!gitRoot) return
     const text = await window.api.git.diff(gitRoot, path, staged)
@@ -128,9 +146,6 @@ export default function SourceControlPanel({
     setDiff({ title: path, files: parseUnifiedDiff(text) })
   }
 
-  // `git diff` shows nothing for an untracked file (there's no tracked
-  // baseline to compare against), so build an all-green "new file" diff
-  // directly from its content instead of leaving the click do nothing.
   async function handleViewUntrackedDiff(path: string): Promise<void> {
     if (!gitRoot) return
     try {
@@ -247,14 +262,14 @@ export default function SourceControlPanel({
     <>
       <div className="sidebar-header">
         <span>Source Control</span>
-        <div style={{ display: 'flex', gap: 6 }}>
-          <button title="Pull" onClick={handlePull} disabled={busy}>
+        <div className="scm-toolbar">
+          <button className="scm-icon-btn" title="Pull" onClick={handlePull} disabled={busy}>
             ⭳
           </button>
-          <button title="Push" onClick={handlePush} disabled={busy}>
+          <button className="scm-icon-btn" title="Push" onClick={handlePush} disabled={busy}>
             ⭱
           </button>
-          <button title="Refresh" onClick={refresh}>
+          <button className="scm-icon-btn" title="Refresh" onClick={refresh}>
             ⟳
           </button>
         </div>
@@ -344,10 +359,6 @@ export default function SourceControlPanel({
               const LANE_W = 12
               const MID = ROW_H / 2
               const cx = (lane: number): number => 6 + lane * LANE_W
-              // Size each row's graph to only the lanes *it* actually touches,
-              // instead of the widest row anywhere in the whole history — a
-              // few busy merge rows shouldn't push every commit's text out to
-              // that same far-right column.
               const rowLanes = [
                 row.lane,
                 ...row.topStraight.map((s) => s.lane),
@@ -479,15 +490,21 @@ export default function SourceControlPanel({
 
         {staged.length > 0 && (
           <>
-            <div className="sidebar-header" style={{ padding: '6px 12px' }}>
-              <span>Staged Changes ({staged.length})</span>
+            <div className="scm-section-header">
+              <span>Staged Changes</span>
+              <div className="scm-section-actions">
+                <button className="scm-icon-btn" title="Unstage All Changes" onClick={handleUnstageAll}>
+                  −
+                </button>
+                <span className="scm-count-badge">{staged.length}</span>
+              </div>
             </div>
             {staged.map((f) => (
-              <div key={f.path} className="tree-item" onClick={() => handleViewDiff(f.path, true)}>
-                <span style={{ width: 16, textAlign: 'center', color: 'var(--success)' }}>{f.index}</span>
-                <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' }}>{f.path}</span>
+              <div key={f.path} className="tree-item scm-file-row" onClick={() => handleViewDiff(f.path, true)}>
+                <FileTypeBadge fileName={f.path.split(/[/\\]/).pop() ?? f.path} />
+                <span className="scm-file-name">{f.path}</span>
                 <button
-                  className="close-btn"
+                  className="scm-row-btn"
                   title="Open file"
                   onClick={(e) => {
                     e.stopPropagation()
@@ -497,7 +514,7 @@ export default function SourceControlPanel({
                   📄
                 </button>
                 <button
-                  className="close-btn"
+                  className="scm-row-btn"
                   title="Unstage"
                   onClick={(e) => {
                     e.stopPropagation()
@@ -506,6 +523,7 @@ export default function SourceControlPanel({
                 >
                   −
                 </button>
+                <span className="scm-status-letter" style={{ color: 'var(--success)' }}>{f.index}</span>
               </div>
             ))}
           </>
@@ -513,15 +531,24 @@ export default function SourceControlPanel({
 
         {(unstaged.length > 0 || untrackedAsChanges.length > 0) && (
           <>
-            <div className="sidebar-header" style={{ padding: '6px 12px' }}>
-              <span>Changes ({unstaged.length + untrackedAsChanges.length})</span>
+            <div className="scm-section-header">
+              <span>Changes</span>
+              <div className="scm-section-actions">
+                <button className="scm-icon-btn" title="Discard All Changes" onClick={handleDiscardAll}>
+                  ↺
+                </button>
+                <button className="scm-icon-btn" title="Stage All Changes" onClick={handleStageAll}>
+                  +
+                </button>
+                <span className="scm-count-badge">{unstaged.length + untrackedAsChanges.length}</span>
+              </div>
             </div>
             {unstaged.map((f) => (
-              <div key={f.path} className="tree-item" onClick={() => handleViewDiff(f.path, false)}>
-                <span style={{ width: 16, textAlign: 'center', color: 'var(--accent-bright)' }}>{f.workingTree}</span>
-                <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' }}>{f.path}</span>
+              <div key={f.path} className="tree-item scm-file-row" onClick={() => handleViewDiff(f.path, false)}>
+                <FileTypeBadge fileName={f.path.split(/[/\\]/).pop() ?? f.path} />
+                <span className="scm-file-name">{f.path}</span>
                 <button
-                  className="close-btn"
+                  className="scm-row-btn"
                   title="Open file"
                   onClick={(e) => {
                     e.stopPropagation()
@@ -531,7 +558,7 @@ export default function SourceControlPanel({
                   📄
                 </button>
                 <button
-                  className="close-btn"
+                  className="scm-row-btn"
                   title="Discard changes"
                   onClick={(e) => {
                     e.stopPropagation()
@@ -541,7 +568,7 @@ export default function SourceControlPanel({
                   ↺
                 </button>
                 <button
-                  className="close-btn"
+                  className="scm-row-btn"
                   title="Stage"
                   onClick={(e) => {
                     e.stopPropagation()
@@ -550,14 +577,15 @@ export default function SourceControlPanel({
                 >
                   +
                 </button>
+                <span className="scm-status-letter" style={{ color: 'var(--accent-bright)' }}>{f.workingTree}</span>
               </div>
             ))}
             {untrackedAsChanges.map((f) => (
-              <div key={f.path} className="tree-item" onClick={() => handleViewUntrackedDiff(f.path)}>
-                <span style={{ width: 16, textAlign: 'center', color: 'var(--success)' }}>U</span>
-                <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' }}>{f.path}</span>
+              <div key={f.path} className="tree-item scm-file-row" onClick={() => handleViewUntrackedDiff(f.path)}>
+                <FileTypeBadge fileName={f.path.split(/[/\\]/).pop() ?? f.path} />
+                <span className="scm-file-name">{f.path}</span>
                 <button
-                  className="close-btn"
+                  className="scm-row-btn"
                   title="Open file"
                   onClick={(e) => {
                     e.stopPropagation()
@@ -567,7 +595,7 @@ export default function SourceControlPanel({
                   📄
                 </button>
                 <button
-                  className="close-btn"
+                  className="scm-row-btn"
                   title="Stage"
                   onClick={(e) => {
                     e.stopPropagation()
@@ -576,6 +604,7 @@ export default function SourceControlPanel({
                 >
                   +
                 </button>
+                <span className="scm-status-letter" style={{ color: 'var(--success)' }}>U</span>
               </div>
             ))}
           </>
@@ -602,8 +631,9 @@ export default function SourceControlPanel({
               maxWidth: 1200,
               height: '80%',
               background: 'var(--bg-editor)',
-              border: '1px solid var(--border)',
-              borderRadius: 6,
+              border: '1px solid var(--hairline)',
+              borderRadius: 12,
+              boxShadow: 'var(--shadow-float)',
               display: 'flex',
               flexDirection: 'column',
               overflow: 'hidden'
@@ -722,7 +752,7 @@ function DiffFileView({ file }: { file: FileDiff }): JSX.Element {
         {file.removed > 0 && <span style={{ fontSize: 11, color: 'var(--danger)' }}>−{file.removed}</span>}
       </div>
       <div style={{ flex: 1, overflow: 'auto' }}>
-        <DiffLinesView lines={file.lines} />
+        <DiffLinesView lines={file.lines} fileName={file.path} />
       </div>
     </div>
   )

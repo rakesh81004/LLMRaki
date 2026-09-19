@@ -103,8 +103,6 @@ export function registerFsHandlers(): void {
     await shell.openPath(targetPath)
   })
 
-  // Used for copy+paste (as opposed to cut+paste, which reuses fs:rename to move).
-  // Auto-renames to "name (copy)" / "name (copy 2)" etc. when the target already exists.
   ipcMain.handle('fs:copy', async (_e, sourcePath: string, destDir: string) => {
     const base = path.basename(sourcePath)
     const ext = path.extname(base)

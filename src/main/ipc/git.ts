@@ -9,8 +9,8 @@ const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'out', 'build', '.nex
 
 export interface GitFileChange {
   path: string
-  index: string // status in the index (staged)
-  workingTree: string // status in the working tree (unstaged)
+  index: string
+  workingTree: string
   staged: boolean
 }
 
@@ -87,11 +87,7 @@ async function isGitRepo(dir: string): Promise<boolean> {
   }
 }
 
-// `git rev-parse` only ever looks *upward* from a directory — it has no way to
-// find a repo nested one level down (e.g. the user opened a monorepo-style
-// outer folder like "V-next-viome" but the actual `.git` lives in "vnext/").
-// VS Code auto-detects nested repos like this; we do a shallow (one-level)
-// scan for the same reason, so opening the outer folder still works.
+// git rev-parse only searches upward, never into subfolders, so a nested repo (e.g. .git one level down in an opened outer folder) needs an explicit shallow scan to be found.
 async function findGitRoot(root: string): Promise<string | null> {
   if (await isGitRepo(root)) return root
 
@@ -103,7 +99,7 @@ async function findGitRoot(root: string): Promise<string | null> {
       if (await isGitRepo(sub)) return sub
     }
   } catch {
-    // ignore unreadable directories
+    return null
   }
   return null
 }
@@ -124,9 +120,6 @@ export function registerGitHandlers(): void {
   })
 
   ipcMain.handle('git:diff', async (_e, root: string, filePath: string, staged: boolean) => {
-    // Full-file context (instead of git's default 3 lines) lets the UI show
-    // the whole file with collapsible "N hidden lines" sections, like a real
-    // compare-with-previous-commit view, rather than isolated hunks.
     const args = staged
       ? ['diff', '--unified=100000', '--cached', '--', filePath]
       : ['diff', '--unified=100000', '--', filePath]

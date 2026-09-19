@@ -1,5 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ChatImage, ChatMessage, AgentMode, FileEditEvent, PermissionRequestEvent } from '../types'
+import {
+  ChatImage,
+  ChatMessage,
+  AgentMode,
+  FileEditEvent,
+  PermissionRequestEvent,
+  CommandAutoRunEvent
+} from '../types'
 import Markdown from './Markdown'
 import ThinkingIndicator from './ThinkingIndicator'
 import {
@@ -104,6 +111,7 @@ interface DisplayMessage extends ChatMessage {
   timestamp?: number
   fileEdits?: DisplayFileEdit[]
   permissionRequests?: DisplayPermissionRequest[]
+  autoRuns?: CommandAutoRunEvent[]
 }
 
 function formatTime(ts: number): string {
@@ -148,8 +156,6 @@ function relativePath(root: string, filePath: string): string {
   return filePath.startsWith(root) ? filePath.slice(root.length + 1) : filePath
 }
 
-// Prefixes each line with its real 1-based line number so the model can report
-// accurate LOC_START values instead of having to count lines itself.
 function withLineNumbers(content: string): string {
   return content
     .split('\n')
@@ -176,8 +182,8 @@ function FileEditCard({ edit, onUndo }: { edit: DisplayFileEdit; onUndo: () => v
   const fileName = edit.relativePath.split(/[/\\]/).pop() ?? edit.relativePath
 
   return (
-    <div className="agent-edit-card">
-      <div className="agent-edit-card-header" onClick={() => setOpen((v) => !v)}>
+    <div className="agent-edit-row">
+      <div className="agent-edit-row-header" onClick={() => setOpen((v) => !v)}>
         <span className="agent-edit-chevron">{open ? '▾' : '▸'}</span>
         <FileTypeBadge fileName={fileName} />
         <span className="agent-edit-title" title={edit.relativePath}>
@@ -202,8 +208,8 @@ function FileEditCard({ edit, onUndo }: { edit: DisplayFileEdit; onUndo: () => v
         )}
       </div>
       {open && (
-        <div style={{ maxHeight: 320, overflow: 'auto', borderTop: '1px solid var(--border)' }}>
-          <DiffLinesView lines={opsToDiffLines(ops)} context={2} />
+        <div className="agent-edit-diff">
+          <DiffLinesView lines={opsToDiffLines(ops)} context={2} fileName={fileName} />
         </div>
       )}
     </div>
@@ -261,6 +267,38 @@ function PermissionCard({
   )
 }
 
+function AutoRunCard({ run }: { run: CommandAutoRunEvent }): JSX.Element {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="agent-permission-card">
+      <div className="agent-permission-title" style={{ cursor: 'pointer' }} onClick={() => setOpen((v) => !v)}>
+        {open ? '▾' : '▸'} 🖥 Ran automatically (read-only) — {run.error ? 'failed' : 'ok'}
+      </div>
+      <pre className="agent-permission-command" style={{ marginBottom: open ? 6 : 0 }}>
+        {run.command}
+      </pre>
+      {open && (
+        <pre
+          style={{
+            padding: 8,
+            fontSize: 11,
+            fontFamily: 'Menlo, Consolas, monospace',
+            background: 'var(--bg-editor)',
+            border: '1px solid var(--border)',
+            borderRadius: 4,
+            maxHeight: 180,
+            overflow: 'auto',
+            whiteSpace: 'pre-wrap',
+            color: run.error ? 'var(--danger)' : 'var(--text-primary)'
+          }}
+        >
+          {run.output || '(no output)'}
+        </pre>
+      )}
+    </div>
+  )
+}
+
 export default function ChatPanel({
   width,
   rootFolder,
@@ -290,9 +328,10 @@ export default function ChatPanel({
   const [hasApiKey, setHasApiKey] = useState<boolean | null>(null)
   const [hasGeminiKey, setHasGeminiKey] = useState<boolean | null>(null)
   const [ollamaModel, setOllamaModel] = useState('llama3.2')
-  const [geminiModel, setGeminiModel] = useState('gemini-2.0-flash')
+  const [geminiModel, setGeminiModel] = useState('gemini-3.6-flash')
   const [modelSwitchNotice, setModelSwitchNotice] = useState<string | null>(null)
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
+  const [rateLimitWait, setRateLimitWait] = useState<number | null>(null)
   const requestIdRef = useRef<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const historyMenuRef = useRef<HTMLDivElement>(null)
@@ -308,9 +347,6 @@ export default function ChatPanel({
     window.api.settings.getGeminiModel().then(setGeminiModel)
   }, [])
 
-  // "Add File to Chat" from the Explorer's right-click menu bumps this signal
-  // to turn the include-active-file toggle on (skipped on initial mount, since
-  // the signal starts at 0 and this only fires once it's actually incremented).
   useEffect(() => {
     if (forceIncludeSignal > 0) setIncludeFile(true)
   }, [forceIncludeSignal])
@@ -319,9 +355,6 @@ export default function ChatPanel({
     localStorage.setItem('llmraki-agent-mode', agentMode)
   }, [agentMode])
 
-  // Edit/Auto mode only exists for Gemini's agentic tool loop, and only makes
-  // sense with a project open (file edits are resolved relative to its root)
-  // — fall back to Ask instead of silently offering a mode that can't work.
   useEffect(() => {
     if (agentMode !== 'ask' && (provider !== 'gemini' || !rootFolder)) {
       setAgentMode('ask')
@@ -335,19 +368,27 @@ export default function ChatPanel({
     return () => clearInterval(interval)
   }, [streaming])
 
+  useEffect(() => {
+    if (rateLimitWait === null) return
+    if (rateLimitWait <= 0) {
+      setRateLimitWait(null)
+      return
+    }
+    const timer = setTimeout(() => setRateLimitWait((s) => (s === null ? null : s - 1)), 1000)
+    return () => clearTimeout(timer)
+  }, [rateLimitWait])
+
   function refreshConversationList(): void {
     window.api.chatHistory.listConversations(historyKey).then(setConversationList)
   }
 
-  // When the open project changes, auto-resume its most recent conversation
-  // (if any) and load the list of everything else for the History menu.
   useEffect(() => {
     let cancelled = false
     loadedRef.current = null
     window.api.chatHistory.listConversations(historyKey).then((list) => {
       if (cancelled) return
       setConversationList(list)
-      if (list.length > 0) {
+      if (list.length > 0 && rootFolder) {
         const mostRecent = list[0]
         window.api.chatHistory.getConversation(historyKey, mostRecent.id).then((loaded) => {
           if (cancelled) return
@@ -368,8 +409,6 @@ export default function ChatPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [historyKey])
 
-  // Persist on change, but only once this exact conversation has finished loading —
-  // otherwise a transient empty state could overwrite what's on disk.
   useEffect(() => {
     if (loadedRef.current !== `${historyKey}::${conversationId}`) return
     if (messages.length === 0) return
@@ -443,11 +482,6 @@ export default function ChatPanel({
     setPendingImages([])
     setModelSwitchNotice(null)
 
-    // Gemini gets its own agentic tool loop (search/read files itself across
-    // multiple turns) — no need to pre-inject context for it. OpenAI/Ollama
-    // have no tool loop, so they rely entirely on this local keyword search.
-    // Edit/Auto mode always needs the tool loop (file edits are tool calls),
-    // regardless of the codebase-search toggle.
     const useAgentLoop = currentProvider === 'gemini' && !!rootFolder && (searchCodebase || agentMode !== 'ask')
 
     const contextBlocks: string[] = []
@@ -505,7 +539,6 @@ export default function ChatPanel({
       timestamp: Date.now()
     }
 
-    // Strip UI-only fields before this becomes conversation history sent to the model.
     const history: ChatMessage[] = messages.map(({ role, content, images }) => ({
       role,
       content,
@@ -527,6 +560,7 @@ export default function ChatPanel({
     requestIdRef.current = requestId
 
     const offChunk = window.api.ai.onChunk(requestId, (chunk) => {
+      setRateLimitWait(null)
       setMessages((prev) => {
         const copy = [...prev]
         const last = copy[copy.length - 1]
@@ -537,11 +571,13 @@ export default function ChatPanel({
       })
     })
     const offDone = window.api.ai.onDone(requestId, () => {
+      setRateLimitWait(null)
       setStreaming(false)
       cleanup()
       refreshConversationList()
     })
     const offError = window.api.ai.onError(requestId, (message) => {
+      setRateLimitWait(null)
       setMessages((prev) => [
         ...prev,
         { role: 'assistant', content: `⚠️ ${message}`, timestamp: Date.now() }
@@ -555,7 +591,11 @@ export default function ChatPanel({
         `Your selected model wasn't available right now — automatically switched to "${switchedModel}" for this reply.`
       )
     })
+    const offRateLimited = window.api.ai.onRateLimited(requestId, (waitSeconds) => {
+      setRateLimitWait(waitSeconds)
+    })
     const offProgress = window.api.ai.onProgress(requestId, (label) => {
+      setRateLimitWait(null)
       setMessages((prev) => {
         const copy = [...prev]
         const last = copy[copy.length - 1]
@@ -610,15 +650,28 @@ export default function ChatPanel({
       })
     })
 
+    const offCommandAutoRun = window.api.ai.onCommandAutoRun(requestId, (run) => {
+      setMessages((prev) => {
+        const copy = [...prev]
+        const last = copy[copy.length - 1]
+        if (last?.role === 'assistant') {
+          copy[copy.length - 1] = { ...last, autoRuns: [...(last.autoRuns ?? []), run] }
+        }
+        return copy
+      })
+    })
+
     function cleanup(): void {
       offChunk()
       offDone()
       offError()
       offModelSwitched()
+      offRateLimited()
       offProgress()
       offFileEdit()
       offPermissionRequest()
       offCommandResult()
+      offCommandAutoRun()
     }
 
     if (currentProvider === 'ollama') {
@@ -647,6 +700,7 @@ export default function ChatPanel({
       }
     }
     setStreaming(false)
+    setRateLimitWait(null)
   }
 
   async function handleUndoEdit(messageIndex: number, editIndex: number): Promise<void> {
@@ -654,7 +708,6 @@ export default function ChatPanel({
     if (!edit) return
     try {
       if (edit.oldContent === null) {
-        // The file didn't exist before this edit — undo means deleting it.
         await window.api.fs.delete(edit.path, false)
         onFileRemoved(edit.path)
       } else {
@@ -671,6 +724,15 @@ export default function ChatPanel({
       })
     } catch (err) {
       window.alert(`Couldn't undo the edit: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  async function handleUndoAllEdits(messageIndex: number): Promise<void> {
+    const edits = messages[messageIndex]?.fileEdits ?? []
+    // Undo in reverse order so a file edited more than once each step rewinds one change instead of reapplying an already-undone snapshot.
+    for (let idx = edits.length - 1; idx >= 0; idx--) {
+      if (edits[idx].undone) continue
+      await handleUndoEdit(messageIndex, idx)
     }
   }
 
@@ -723,7 +785,7 @@ export default function ChatPanel({
   const busy = streaming || searching
 
   return (
-    <div className="chat-panel" style={{ width }}>
+    <div className="chat-panel" data-mode={agentMode} style={{ width }}>
       <div className="chat-header">
         <span>AI Chat</span>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -756,10 +818,12 @@ export default function ChatPanel({
                   width: 260,
                   maxHeight: 320,
                   overflowY: 'auto',
-                  background: 'var(--bg-sidebar)',
-                  border: '1px solid var(--border)',
-                  borderRadius: 6,
-                  boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+                  background: 'var(--overlay-bg)',
+                  backdropFilter: 'blur(28px) saturate(180%)',
+                  WebkitBackdropFilter: 'blur(28px) saturate(180%)',
+                  border: '1px solid var(--hairline)',
+                  borderRadius: 10,
+                  boxShadow: 'var(--shadow-float)',
                   zIndex: 200,
                   textAlign: 'left'
                 }}
@@ -802,13 +866,26 @@ export default function ChatPanel({
 
       <div className="chat-messages">
         {messages.length === 0 && (
-          <div className="chat-message system-note">
-            Ask about your code, request a refactor, or paste an error message.
-            {rootFolder &&
-              (provider === 'gemini'
-                ? ' Gemini can search and read files from your project on its own as it answers.'
-                : ' Relevant files from your project are found and included automatically.')}
-          </div>
+          <>
+            <div className="chat-message system-note">
+              Ask about your code, request a refactor, or paste an error message.
+              {rootFolder &&
+                (provider === 'gemini'
+                  ? ' Gemini can search and read files from your project on its own as it answers.'
+                  : ' Relevant files from your project are found and included automatically.')}
+            </div>
+            {!rootFolder && conversationList.length > 0 && (
+              <div className="chat-recent-list">
+                <div className="chat-recent-heading">Recent chats</div>
+                {conversationList.slice(0, 5).map((c) => (
+                  <div key={c.id} onClick={() => loadConversation(c.id)} className="chat-recent-item">
+                    <div className="chat-recent-item-title">{c.title}</div>
+                    <div className="chat-recent-item-time">{timeAgo(c.updatedAt)}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
         )}
         {modelSwitchNotice && (
           <div className="chat-message system-note" style={{ color: '#e0a030' }}>
@@ -868,29 +945,33 @@ export default function ChatPanel({
                 </div>
               )}
               {m.progressSteps && m.progressSteps.length > 0 && (
-                <details
-                  style={{
-                    marginBottom: 8,
-                    fontSize: 11,
-                    color: 'var(--text-muted)',
-                    borderBottom: '1px solid var(--border)',
-                    paddingBottom: 6
-                  }}
-                >
-                  <summary style={{ cursor: 'pointer' }}>
-                    {isLast && streaming ? 'Exploring… ' : 'Explored '}
-                    {readCount} file{readCount === 1 ? '' : 's'}, {searchCount} search
-                    {searchCount === 1 ? '' : 'es'}
+                <details className="chat-progress" open={isLast && streaming}>
+                  <summary>
+                    {isLast && streaming ? 'Exploring' : 'Explored'}{' '}
+                    <span className="chat-progress-muted">
+                      {readCount} file{readCount === 1 ? '' : 's'}, {searchCount} search
+                      {searchCount === 1 ? '' : 'es'}
+                    </span>
                   </summary>
-                  <div style={{ marginTop: 4, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  <div className="chat-progress-steps">
                     {m.progressSteps.map((s, idx) => (
-                      <div key={idx}>• {s}</div>
+                      <div key={idx}>{s}</div>
                     ))}
                   </div>
                 </details>
               )}
               {m.fileEdits && m.fileEdits.length > 0 && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 8 }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginBottom: 8 }}>
+                  <div className="agent-edit-summary-bar">
+                    <span>
+                      {m.fileEdits.length} File{m.fileEdits.length === 1 ? '' : 's'}
+                    </span>
+                    {m.fileEdits.some((e) => !e.undone) && (
+                      <button className="btn-secondary" style={{ fontSize: 10, padding: '2px 8px' }} onClick={() => handleUndoAllEdits(i)}>
+                        Undo All
+                      </button>
+                    )}
+                  </div>
                   {m.fileEdits.map((edit, editIdx) => (
                     <FileEditCard key={editIdx} edit={edit} onUndo={() => handleUndoEdit(i, editIdx)} />
                   ))}
@@ -904,6 +985,13 @@ export default function ChatPanel({
                       request={req}
                       onRespond={(allowed) => handleRespondPermission(i, req.permissionId, allowed)}
                     />
+                  ))}
+                </div>
+              )}
+              {m.autoRuns && m.autoRuns.length > 0 && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 8 }}>
+                  {m.autoRuns.map((run, runIdx) => (
+                    <AutoRunCard key={runIdx} run={run} />
                   ))}
                 </div>
               )}
@@ -947,6 +1035,7 @@ export default function ChatPanel({
           </div>
         )}
 
+        <div className="chat-composer-card">
         {(pendingImages.length > 0 || includeFile) && (
           <div className="chat-attachments-row">
             {includeFile && activeFileName && (
@@ -981,39 +1070,44 @@ export default function ChatPanel({
           onPaste={handlePaste}
         />
 
-        {(searching || (streaming && !elapsedSeconds)) && (
-          <div className="chat-status-line">
-            <ThinkingIndicator label={searching ? 'Searching codebase' : 'Generating'} />
+        {rateLimitWait !== null ? (
+          <div className="chat-status-line rate-limit-pulse" style={{ color: '#e0a030' }}>
+            ⏳ Rate limit reached — waiting {rateLimitWait}s for it to reset, then retrying automatically…
           </div>
+        ) : (
+          (searching || (streaming && !elapsedSeconds)) && (
+            <div className="chat-status-line">
+              <ThinkingIndicator label={searching ? 'Searching codebase' : 'Generating'} />
+            </div>
+          )
         )}
-
-        <div className="agent-mode-row">
-          {(['ask', 'edit', 'auto'] as AgentMode[]).map((m) => {
-            const disabled = m !== 'ask' && (provider !== 'gemini' || !rootFolder)
-            return (
-              <button
-                key={m}
-                className={`agent-mode-btn ${agentMode === m ? 'active' : ''}`}
-                disabled={disabled}
-                title={
-                  disabled
-                    ? 'Edit and Auto mode need Gemini with a project folder open'
-                    : m === 'ask'
-                      ? 'Ask: read-only, no file or terminal changes'
-                      : m === 'edit'
-                        ? 'Edit: applies file edits directly (with undo) — terminal commands always ask permission'
-                        : 'Auto: edits multiple files without pausing — terminal commands always ask permission'
-                }
-                onClick={() => setAgentMode(m)}
-              >
-                {m === 'ask' ? 'Ask' : m === 'edit' ? 'Edit' : 'Auto'}
-              </button>
-            )
-          })}
-        </div>
 
         <div className="chat-toolbar">
           <div className="chat-toolbar-group">
+            <div className="agent-mode-row">
+              {(['ask', 'edit', 'auto'] as AgentMode[]).map((m) => {
+                const disabled = m !== 'ask' && (provider !== 'gemini' || !rootFolder)
+                return (
+                  <button
+                    key={m}
+                    className={`agent-mode-btn ${agentMode === m ? 'active' : ''}`}
+                    disabled={disabled}
+                    title={
+                      disabled
+                        ? 'Edit and Auto mode need Gemini with a project folder open'
+                        : m === 'ask'
+                          ? 'Ask: read-only, no file or terminal changes'
+                          : m === 'edit'
+                            ? 'Edit: applies file edits directly (with undo) — terminal commands always ask permission'
+                            : 'Auto: edits multiple files without pausing — terminal commands always ask permission'
+                    }
+                    onClick={() => setAgentMode(m)}
+                  >
+                    {m === 'ask' ? 'Ask' : m === 'edit' ? 'Edit' : 'Auto'}
+                  </button>
+                )
+              })}
+            </div>
             <input
               ref={fileInputRef}
               type="file"
@@ -1078,6 +1172,7 @@ export default function ChatPanel({
               </button>
             )}
           </div>
+        </div>
         </div>
       </div>
     </div>

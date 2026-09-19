@@ -16,24 +16,26 @@ self.MonacoEnvironment = {
   }
 }
 
-// Point @monaco-editor/react at the locally bundled monaco-editor package
-// instead of its default behaviour of fetching from a CDN (which our CSP blocks).
 loader.config({ monaco })
 
-// Force the theme's token-color CSS to be registered immediately, so
-// monaco.editor.colorize() (used to syntax-highlight code blocks in AI chat
-// responses) renders correctly even before any real editor tab is opened.
-monaco.editor.setTheme('vs-dark')
+monaco.editor.defineTheme('llmraki-dark', {
+  base: 'vs-dark',
+  inherit: true,
+  rules: [],
+  colors: {
+    'editor.background': '#000000',
+    'editorGutter.background': '#000000',
+    'minimap.background': '#000000',
+    'editor.lineHighlightBackground': '#0a0a0a',
+    'editorWidget.background': '#0a0a0a',
+    'editorHoverWidget.background': '#0a0a0a',
+    'editorSuggestWidget.background': '#0a0a0a'
+  }
+})
 
-// LLMRaki has no real project context for TS/JS files — no node_modules, no
-// tsconfig.json resolution, no path aliases. Left at Monaco's defaults, the
-// TypeScript language service treats every unresolved import and every JSX
-// tag (JSX isn't parseable without an explicit `jsx` compiler option) as an
-// error, which floods any real-world file with false-positive red squiggles
-// that don't reflect an actual problem in the code. Configure `jsx` so JSX
-// itself parses correctly (keeping real syntax errors like mismatched
-// brackets meaningful), and disable semantic validation entirely, since
-// "cannot find module" for every import is not a genuine diagnostic here.
+monaco.editor.setTheme('llmraki-dark')
+
+// No real TS project context here (no node_modules/tsconfig resolution), so disable semantic validation — otherwise every import and JSX tag shows false-positive errors.
 const tsCompilerOptions = {
   jsx: monaco.languages.typescript.JsxEmit.ReactJSX,
   target: monaco.languages.typescript.ScriptTarget.ESNext,

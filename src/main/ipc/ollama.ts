@@ -4,8 +4,7 @@ import type { ChatMessage } from './openai'
 const OLLAMA_BASE_URL = 'http://localhost:11434'
 const activeRequests = new Map<string, AbortController>()
 
-// Ollama's chat API takes raw base64 (no "data:" prefix) in a per-message
-// `images` array — only vision-capable models (e.g. llava) will actually use it.
+// Ollama's chat API takes raw base64 (no "data:" prefix) in a per-message `images` array.
 function toOllamaMessages(
   messages: ChatMessage[]
 ): { role: string; content: string; images?: string[] }[] {
@@ -67,9 +66,7 @@ async function streamOllamaChat(
             win.webContents.send(channel('done'))
             return
           }
-        } catch {
-          // ignore malformed fragments
-        }
+        } catch {}
       }
     }
     win.webContents.send(channel('done'))

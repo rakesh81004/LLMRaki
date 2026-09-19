@@ -1,62 +1,49 @@
 import type { GitCommit } from './types'
 
-// A palette cycled through every time a brand-new branch line starts (not tied
-// to a fixed lane column), so colors stay distinct the way GitLens/VS Code's
-// graph looks, instead of repeating every N lanes.
-export const GRAPH_LANE_COLORS = [
-  '#e8833a', // orange
-  '#e35d9c', // pink
-  '#3fc1b0', // teal
-  '#a06cd5', // purple
-  '#e0c341', // gold
-  '#5b9df9', // blue
-  '#e0575b', // red
-  '#7bc96f', // green
-  '#d68cf3', // lilac
-  '#4fd1c5' // cyan
+const GRAPH_LANE_COLORS = [
+  '#e8833a',
+  '#e35d9c',
+  '#3fc1b0',
+  '#a06cd5',
+  '#e0c341',
+  '#5b9df9',
+  '#e0575b',
+  '#7bc96f',
+  '#d68cf3',
+  '#4fd1c5'
 ]
 
-export interface GraphLaneSeg {
+interface GraphLaneSeg {
   lane: number
   color: string
 }
 
-export interface GraphCurve {
+interface GraphCurve {
   from: number
   to: number
   color: string
 }
 
-export interface GitGraphRow {
+interface GitGraphRow {
   commit: GitCommit
   lane: number
   color: string
   isMerge: boolean
   isHead: boolean
-  /** Straight lines for unrelated branches passing above the dot's row-half. */
   topStraight: GraphLaneSeg[]
-  /** Curves for other branches merging into this commit from above. */
   topCurvesIn: GraphCurve[]
-  /** Straight lines for unrelated branches passing below the dot's row-half. */
   bottomStraight: GraphLaneSeg[]
-  /** Curves fanning out to other parents (merge commits) below. */
   bottomCurvesOut: GraphCurve[]
   hasTopLine: boolean
   hasBottomLine: boolean
 }
 
-export interface GitGraphLayout {
+interface GitGraphLayout {
   rows: GitGraphRow[]
   maxLanes: number
 }
 
-/**
- * Lays out a colorful multi-lane commit graph (like `git log --graph` /
- * GitLens) from a flat, newest-first commit list. Each lane is a vertical
- * "track" that persists (and keeps its color) for as long as a line of
- * descent is unresolved; merges fan a lane out into new lanes, and branch
- * points converge separate lanes back into one with a curve.
- */
+// Lays out a multi-lane commit graph (like `git log --graph`): each lane persists and keeps its color while a line of descent is unresolved; merges fan a lane into new lanes, and converging branches curve back into one.
 export function buildGitGraph(commits: GitCommit[]): GitGraphLayout {
   const active: (string | null)[] = []
   const laneColor: (string | null)[] = []
@@ -101,8 +88,6 @@ export function buildGitGraph(commits: GitCommit[]): GitGraphLayout {
       }
     })
 
-    // Non-primary lanes that also pointed at this commit have converged here;
-    // free them so their columns can be reused (with a fresh color) later.
     matching.forEach((idx) => {
       if (idx !== lane) {
         active[idx] = null
@@ -161,7 +146,7 @@ export function buildGitGraph(commits: GitCommit[]): GitGraphLayout {
 
 export type RefKind = 'head' | 'local' | 'remote' | 'tag'
 
-export interface ParsedRef {
+interface ParsedRef {
   kind: RefKind
   label: string
 }

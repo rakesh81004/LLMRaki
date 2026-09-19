@@ -5,7 +5,7 @@ import path from 'path'
 export const IGNORED_DIRS = new Set(['node_modules', '.git', 'dist', 'out', 'build', '.next', '.cache'])
 const MAX_FILE_LIST = 5000
 const MAX_SEARCH_RESULTS = 500
-export const MAX_FILE_SIZE = 2 * 1024 * 1024 // skip binaries/huge files
+export const MAX_FILE_SIZE = 2 * 1024 * 1024
 
 export interface SearchMatch {
   file: string
@@ -77,9 +77,6 @@ export async function walk(dir: string, out: string[], limit: number): Promise<v
   }
 }
 
-// Shared scoring engine: ranks files in `root` by how well their path/content
-// match `query`'s keywords. Used both for one-shot context injection
-// (relevantFiles) and for the agent's search_files tool (more, shorter results).
 export async function findMatchingFiles(
   root: string,
   query: string,
@@ -158,7 +155,8 @@ export function registerSearchHandlers(): void {
           matcher = new RegExp(pattern, options.caseSensitive ? 'g' : 'gi')
         }
       } catch {
-        return [] // invalid regex — treat as no results rather than erroring
+        // Invalid regex is treated as no results rather than surfaced as an error.
+        return []
       }
 
       const files: string[] = []
@@ -185,9 +183,7 @@ export function registerSearchHandlers(): void {
               if (results.length >= MAX_SEARCH_RESULTS) break
             }
           }
-        } catch {
-          // skip unreadable/binary files
-        }
+        } catch {}
       }
       return results
     }

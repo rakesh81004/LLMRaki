@@ -9,8 +9,6 @@ interface Props {
   onOpenFile?: (path: string, line?: number) => void
 }
 
-// Matches inline code like `src/lib/foo.ts` or `src/lib/foo.ts:42` — requires a
-// letter-led extension so it doesn't false-positive on version numbers like `1.2.3`.
 const FILE_REF_REGEX = /^([\w@][\w\-./]*\.[a-zA-Z][a-zA-Z0-9]{0,9})(?::(\d+))?$/
 
 function joinPath(root: string, rel: string): string {
@@ -35,8 +33,6 @@ export default function Markdown({ content, rootFolder, onOpenFile }: Props): JS
         remarkPlugins={[remarkGfm]}
         components={{
           code(props) {
-            // Only reached for inline code — block code is fully handled by the
-            // `pre` override below, which never delegates rendering back here.
             const { className, children, ...rest } = props
             const text = String(children).trim()
             const match = !className && rootFolder && onOpenFile ? text.match(FILE_REF_REGEX) : null
@@ -70,9 +66,7 @@ export default function Markdown({ content, rootFolder, onOpenFile }: Props): JS
             const rawText = extractText(child?.props?.children).replace(/\n$/, '')
             let lines = rawText.split('\n')
 
-            // A `LOC_START:N` marker as the first line means this excerpt was taken
-            // from a real file at line N — strip it and number the gutter from
-            // there instead of always starting at 1.
+            // A `LOC_START:N` marker as the first line means the excerpt came from a real file at line N — strip it and number the gutter from there instead of starting at 1.
             let startLine = 1
             const locMatch = lines[0]?.trim().match(/^LOC_START:(\d+)$/)
             if (locMatch) {

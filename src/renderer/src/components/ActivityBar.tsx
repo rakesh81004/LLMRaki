@@ -6,7 +6,8 @@ import {
   RunIcon,
   ExtensionsIcon,
   ChatIcon,
-  GearIcon
+  GearIcon,
+  FolderIcon
 } from './Icons'
 
 interface Props {
@@ -15,6 +16,7 @@ interface Props {
   gitBadge: number
   onSelectSidebar: (view: SidebarView) => void
   onToggleChat: () => void
+  onGoHome: () => void
 }
 
 export default function ActivityBar({
@@ -22,7 +24,8 @@ export default function ActivityBar({
   chatOpen,
   gitBadge,
   onSelectSidebar,
-  onToggleChat
+  onToggleChat,
+  onGoHome
 }: Props): JSX.Element {
   return (
     <div className="activity-bar">
@@ -70,6 +73,9 @@ export default function ActivityBar({
         <ChatIcon />
       </button>
       <div style={{ flex: 1 }} />
+      <button className="activity-icon" title="Home" onClick={onGoHome}>
+        <FolderIcon />
+      </button>
       <button
         className={`activity-icon ${sidebarView === 'settings' ? 'active' : ''}`}
         title="Settings (Cmd+,)"

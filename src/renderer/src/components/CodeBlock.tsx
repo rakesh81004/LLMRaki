@@ -14,8 +14,7 @@ function toMonacoLanguage(fenceLang: string): string {
   return EXT_TO_LANGUAGE[key] ?? key
 }
 
-// Reuses Monaco's own tokenizer/theme (the same one the code editor uses) so
-// code shown in AI chat responses is colored exactly like viewing the file.
+// Reuses Monaco's own tokenizer/theme so code in AI chat responses is colored exactly like viewing the file.
 export default function CodeBlock({ code, fenceLang, startLine }: Props): JSX.Element {
   const [html, setHtml] = useState<string | null>(null)
   const language = toMonacoLanguage(fenceLang)

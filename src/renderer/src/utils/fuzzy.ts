@@ -1,10 +1,9 @@
-export interface FuzzyMatch {
+interface FuzzyMatch {
   indices: number[]
   score: number
 }
 
-// Subsequence fuzzy match: every character of `query` must appear in `text`,
-// in order, case-insensitively. Score rewards early and contiguous matches.
+// Subsequence fuzzy match — every query character must appear in order in text; score rewards early and contiguous matches.
 export function fuzzyMatch(text: string, query: string): FuzzyMatch | null {
   if (!query) return { indices: [], score: 0 }
   const t = text.toLowerCase()

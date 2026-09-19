@@ -1,4 +1,5 @@
 import { app, Menu, BrowserWindow, MenuItemConstructorOptions } from 'electron'
+import { createWindow } from './window'
 
 function send(action: string): void {
   const win = BrowserWindow.getFocusedWindow()
@@ -31,6 +32,11 @@ export function buildMenu(): void {
       label: 'File',
       submenu: [
         { label: 'New File', accelerator: 'CmdOrCtrl+N', click: () => send('new-file') },
+        {
+          label: 'New Window',
+          accelerator: 'CmdOrCtrl+Shift+N',
+          click: () => createWindow()
+        },
         { label: 'Open Folder…', accelerator: 'CmdOrCtrl+O', click: () => send('open-folder') },
         { type: 'separator' },
         { label: 'Save', accelerator: 'CmdOrCtrl+S', click: () => send('save-file') },

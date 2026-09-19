@@ -1,6 +1,6 @@
 import type { DiffLine } from '../diffParser'
 
-export default function DiffLineRow({ line }: { line: DiffLine }): JSX.Element {
+export default function DiffLineRow({ line, html }: { line: DiffLine; html?: string }): JSX.Element {
   const bg =
     line.type === 'add'
       ? 'rgba(46, 160, 67, 0.18)'
@@ -41,7 +41,16 @@ export default function DiffLineRow({ line }: { line: DiffLine }): JSX.Element {
       <span style={{ width: 14, flexShrink: 0, textAlign: 'center', color: markerColor, userSelect: 'none' }}>
         {marker}
       </span>
-      <span style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', flex: 1 }}>{line.content}</span>
+      {html !== undefined ? (
+        // eslint-disable-next-line react/no-danger
+        <span
+          className="monaco-colorized"
+          style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', flex: 1 }}
+          dangerouslySetInnerHTML={{ __html: html }}
+        />
+      ) : (
+        <span style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', flex: 1 }}>{line.content}</span>
+      )}
     </div>
   )
 }

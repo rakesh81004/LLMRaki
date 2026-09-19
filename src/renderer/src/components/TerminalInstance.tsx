@@ -24,8 +24,8 @@ export default function TerminalInstance({ id, cwd, active, pendingCommand, onCo
       fontSize: 13,
       fontFamily: 'Menlo, Consolas, monospace',
       theme: {
-        background: '#1e1e1e',
-        foreground: '#cccccc'
+        background: '#000000',
+        foreground: '#dcdcdc'
       }
     })
     const fitAddon = new FitAddon()

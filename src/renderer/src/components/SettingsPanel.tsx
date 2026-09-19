@@ -23,11 +23,11 @@ const MODEL_OPTIONS = [
   { value: 'gpt-3.5-turbo', label: 'GPT-3.5 Turbo' }
 ]
 
-// Shown only until a real key is saved and the live list can be fetched.
+// Placeholder shown only until a real key is saved and the live list loads — Google's lineup shifts often, so these are never relied on for the actual request.
 const GEMINI_FALLBACK_MODELS: GeminiModelInfo[] = [
-  { id: 'gemini-2.0-flash', displayName: 'Gemini 2.0 Flash', description: '' },
-  { id: 'gemini-1.5-flash', displayName: 'Gemini 1.5 Flash', description: '' },
-  { id: 'gemini-1.5-pro', displayName: 'Gemini 1.5 Pro', description: '' }
+  { id: 'gemini-3.6-flash', displayName: 'Gemini 3.6 Flash', description: '' },
+  { id: 'gemini-3.1-pro-preview', displayName: 'Gemini 3.1 Pro (preview)', description: '' },
+  { id: 'gemini-3.5-flash-lite', displayName: 'Gemini 3.5 Flash Lite', description: '' }
 ]
 
 const STATUS_LABEL: Record<GeminiAvailabilityStatus, string> = {
@@ -56,7 +56,7 @@ export default function SettingsPanel(): JSX.Element {
   const [ollamaStatus, setOllamaStatus] = useState<'checking' | 'online' | 'offline'>('checking')
   const [geminiKey, setGeminiKeyInput] = useState('')
   const [hasGeminiKey, setHasGeminiKey] = useState(false)
-  const [geminiModel, setGeminiModel] = useState('gemini-2.0-flash')
+  const [geminiModel, setGeminiModel] = useState('gemini-3.6-flash')
   const [geminiModels, setGeminiModels] = useState<GeminiModelInfo[]>(GEMINI_FALLBACK_MODELS)
   const [loadingGeminiModels, setLoadingGeminiModels] = useState(false)
   const [geminiAvailability, setGeminiAvailability] = useState<Record<string, GeminiAvailability>>({})

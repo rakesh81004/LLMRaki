@@ -10,8 +10,6 @@ const activeRequests = new Map<string, AbortController>()
 
 export type AgentMode = 'ask' | 'edit' | 'auto'
 
-// Resolves when the user answers a permission prompt shown in the renderer
-// for a proposed terminal command (Allow/Deny), keyed by a per-call id.
 const pendingPermissions = new Map<string, (allowed: boolean) => void>()
 
 export interface GeminiModelInfo {
@@ -32,6 +30,9 @@ export interface GeminiAvailability {
 
 const modelListCache = new Map<string, { fetchedAt: number; models: GeminiModelInfo[] }>()
 const MODEL_LIST_TTL_MS = 5 * 60 * 1000
+
+// Google's model list mixes real chat models in with TTS/image/audio/embedding/computer-use models that also declare `generateContent` support but will never answer a chat request.
+const NON_CHAT_MODEL_RE = /-tts|-image|-audio|-live|computer-use|embedding|aqa|imagen|veo/i
 
 async function fetchModelList(apiKey: string): Promise<GeminiModelInfo[]> {
   const cached = modelListCache.get(apiKey)
@@ -54,11 +55,8 @@ async function fetchModelList(apiKey: string): Promise<GeminiModelInfo[]> {
           ((m as Record<string, unknown>).supportedGenerationMethods as string[]).includes(
             'generateContent'
           ) &&
-          // Some models declare generateContent support but actually require a different API
-          // surface (e.g. "deep-research-pro-preview-*" needs the Interactions API) or aren't
-          // text chat models at all (embedding/image/video models). Restrict to the standard
-          // "gemini-<version>-..." chat model family, which is what streamGenerateContent expects.
-          /^models\/gemini-\d/i.test(String((m as Record<string, unknown>).name))
+          /^models\/gemini-\d/i.test(String((m as Record<string, unknown>).name)) &&
+          !NON_CHAT_MODEL_RE.test(String((m as Record<string, unknown>).name))
       )
       .map((m) => ({
         id: String(m.name).replace(/^models\//, ''),
@@ -74,7 +72,6 @@ async function fetchModelList(apiKey: string): Promise<GeminiModelInfo[]> {
   }
 }
 
-// Higher score = more capable/"high level". Prefers newer versions and Pro over Flash over Flash-Lite.
 function rankModel(id: string): number {
   const versionMatch = id.match(/^gemini-(\d+(?:\.\d+)?)/)
   const version = versionMatch ? parseFloat(versionMatch[1]) : 0
@@ -134,13 +131,35 @@ function toGeminiContents(messages: ChatMessage[]): {
     : { contents }
 }
 
-// Only give up on the whole request for errors that would fail identically on every model:
-// a malformed request (400) or bad/missing credentials (401). Everything else — model removed
-// (404), no access (403), rate limited (429), or a transient outage (5xx) — is worth retrying
-// with the next candidate, since Google's model lineup changes over time and this shouldn't
-// require the app to be updated just to keep working.
 function isNonRetryable(status: number): boolean {
   return status === 400 || status === 401
+}
+
+function parseRetryDelaySeconds(errorText: string): number | null {
+  const match = errorText.match(/"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)s"/)
+  if (!match) return null
+  const seconds = Math.ceil(parseFloat(match[1]))
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : null
+}
+
+const MAX_RATE_LIMIT_WAIT_SECONDS = 90
+
+function sleepUnlessAborted(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new DOMException('Aborted', 'AbortError'))
+      return
+    }
+    const timer = setTimeout(resolve, ms)
+    signal.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(timer)
+        reject(new DOMException('Aborted', 'AbortError'))
+      },
+      { once: true }
+    )
+  })
 }
 
 async function streamGeminiChat(
@@ -165,33 +184,56 @@ async function streamGeminiChat(
     const candidates = await getCandidateModels(apiKey, preferredModel)
     let response: Response | undefined
     let usedModel = preferredModel
-    const attemptErrors: string[] = []
+    let attemptErrors: string[] = []
 
-    for (const candidate of candidates) {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${candidate}:streamGenerateContent?alt=sse&key=${apiKey}`
-      let attempt: Response
-      try {
-        attempt = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body,
-          signal: controller.signal
-        })
-      } catch (err) {
-        if (controller.signal.aborted) throw err
-        attemptErrors.push(`${candidate}: ${err instanceof Error ? err.message : String(err)}`)
-        continue
+    for (let round = 0; round < 2; round++) {
+      attemptErrors = []
+      let minRetryDelay: number | null = null
+      let allRateLimited = candidates.length > 0
+
+      for (const candidate of candidates) {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${candidate}:streamGenerateContent?alt=sse&key=${apiKey}`
+        let attempt: Response
+        try {
+          attempt = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body,
+            signal: controller.signal
+          })
+        } catch (err) {
+          if (controller.signal.aborted) throw err
+          attemptErrors.push(`${candidate}: ${err instanceof Error ? err.message : String(err)}`)
+          allRateLimited = false
+          continue
+        }
+
+        if (attempt.ok && attempt.body) {
+          response = attempt
+          usedModel = candidate
+          break
+        }
+
+        const text = await attempt.text().catch(() => '')
+        attemptErrors.push(`${candidate} (${attempt.status}): ${text}`)
+        if (attempt.status === 429) {
+          const delay = parseRetryDelaySeconds(text)
+          if (delay !== null) minRetryDelay = minRetryDelay === null ? delay : Math.min(minRetryDelay, delay)
+        } else {
+          allRateLimited = false
+        }
+        if (isNonRetryable(attempt.status)) {
+          allRateLimited = false
+          break
+        }
       }
 
-      if (attempt.ok && attempt.body) {
-        response = attempt
-        usedModel = candidate
-        break
-      }
+      if (response) break
+      if (round === 1 || !allRateLimited || minRetryDelay === null) break
 
-      const text = await attempt.text().catch(() => '')
-      attemptErrors.push(`${candidate} (${attempt.status}): ${text}`)
-      if (isNonRetryable(attempt.status)) break
+      const waitSeconds = Math.min(minRetryDelay, MAX_RATE_LIMIT_WAIT_SECONDS)
+      win.webContents.send(channel('rateLimited'), waitSeconds)
+      await sleepUnlessAborted(waitSeconds * 1000, controller.signal)
     }
 
     if (!response || !response.body) {
@@ -229,9 +271,7 @@ async function streamGeminiChat(
           if (delta) {
             win.webContents.send(channel('chunk'), delta)
           }
-        } catch {
-          // ignore malformed SSE fragments
-        }
+        } catch {}
       }
     }
     win.webContents.send(channel('done'))
@@ -246,11 +286,6 @@ async function streamGeminiChat(
     activeRequests.delete(requestId)
   }
 }
-
-// --- Agentic tool-calling (used only when a project folder is open) ---
-// Lets the model decide to search the codebase and read specific files across
-// multiple turns before answering, instead of only working off a single
-// pre-injected chunk of context.
 
 const READ_TOOL_DECLS = [
   {
@@ -288,12 +323,6 @@ const READ_TOOL_DECLS = [
   }
 ]
 
-// Only offered in Edit/Auto mode. File writes apply immediately (shown to the
-// user as a diff with an Undo button) — the app doesn't gate those behind a
-// permission prompt since that's the whole point of Edit/Auto mode. Terminal
-// commands are different: they can do anything (install packages, hit
-// network APIs, delete things), so every single call always pauses for an
-// explicit Allow/Deny from the user, in every mode, with no auto-run bypass.
 const EDIT_TOOL_DECLS = [
   {
     name: 'write_file',
@@ -311,7 +340,7 @@ const EDIT_TOOL_DECLS = [
   {
     name: 'run_terminal_command',
     description:
-      'Run a shell command in the project root (installing dependencies, running tests/builds, git commands, etc). This ALWAYS pauses for the user to explicitly allow or deny it before it runs, no matter what — that is handled automatically by the app, so just call this tool normally. If the user denies it, do not retry the same command; explain and suggest an alternative instead.',
+      'Run a shell command in the project root (running tests/builds, git commands, moving/deleting local files, etc). Most commands run immediately. Installing a package, pushing/publishing outside the project, or hitting a third-party endpoint directly (curl/wget/ssh/etc) pauses for the user to explicitly allow or deny it first — that check is handled automatically by the app based on the command, so just call this tool normally either way. If the user denies a paused command, do not retry the same command; explain and suggest an alternative instead.',
     parameters: {
       type: 'OBJECT',
       properties: {
@@ -327,20 +356,33 @@ function buildTools(mode: AgentMode): { functionDeclarations: unknown[] }[] {
   return [{ functionDeclarations: decls }]
 }
 
+const TERMINAL_POLICY =
+  'For run_terminal_command: most commands (building, testing, git commit/checkout/branch/merge, moving/creating/deleting local files, etc.) run immediately — just call them normally, no need to warn the user first. Only three things ever pause for the user\'s explicit permission, handled automatically by the app based on the command itself: installing a package (npm/pip/brew/etc install), pushing or publishing something outside the project (git push, npm publish, docker push), or talking directly to a third-party endpoint (curl, wget, ssh, scp, etc). You never need to ask the user in chat either way — just call the tool and respect whatever comes back. ' +
+  'When asked to undo, revert, or roll back changes — especially your own previous edits in this conversation — do it by calling write_file directly with the original content (which you already read or wrote earlier in this conversation), NOT by running a broad git command like `git checkout -- <path>`, `git reset`, or `git clean`. Those operate on the whole working tree and would also discard the user\'s own unrelated uncommitted work, not just your edits — the exact opposite of "revert only the changes made by you". Only use a git-based revert if the user explicitly asks for a git reset/checkout by name.'
+
+const APPLY_INSTRUCTION =
+  'When the user asks you to fix, change, add, remove, refactor, clean up, or optimize something in the code, you MUST actually call write_file to make that change yourself — do not just describe the fix, list what should change, or print "here is the optimized/clean implementation" as a fenced code block in your text response and stop there. A code block in your chat reply is NEVER a substitute for calling write_file — if you already know what the new file content should be (you just wrote it out to show the user), that means you have everything you need to call write_file with that exact content right now, so do it instead of only printing it. Describing or showing example code without calling write_file is treated as not having done the task at all. Only skip write_file if the user is purely asking a question with no request to change anything. ' +
+  'If the same fix/pattern applies to multiple files (e.g. "remove use client from these 12 components", "apply this optimization across all X sections"), apply it directly to EVERY one of those files via write_file in this response — do not fix just one file as a demonstration and list the rest under "next steps" or "apply this same pattern to" for the user to ask about again; that is treated as leaving the task unfinished. If you truly cannot get to every file within your tool budget, apply write_file to as many as you can and explicitly say which ones are left, rather than doing only one and describing the rest. ' +
+  'In your final answer, NEVER say a file was fixed/changed/updated/cleaned up/optimized unless you actually got a successful write_file result for that exact file earlier in this same conversation — for every file you identified but did not actually call write_file on, say plainly that you did not get to it yet, do not imply it was done.'
+
 const MODE_INSTRUCTIONS: Record<AgentMode, string> = {
   ask: 'You are in ASK mode: read-only. You can search, list, and read files, but you cannot create or edit files or run terminal commands. If the user wants changes made, tell them to switch to Edit or Auto mode.',
   edit:
-    'You are in EDIT mode: when the user asks you to fix, change, add, remove, refactor, or clean up something in the code, you MUST actually call write_file to make that change yourself — do not just describe the fix, list what should change, or show a hypothetical diff in your text response and stop there. Describing without calling write_file is treated as not having done the task. Only skip write_file if the user is purely asking a question with no request to change anything. Edits apply immediately and the user sees a real diff with an undo option, so do not ask permission before editing files. If a task touches many files, prioritize actually calling write_file on as many of them as you can over spending your budget only investigating — a partial set of real edits is much more useful than a complete list of edits you only described. In your final answer, NEVER say a file was fixed/changed/updated/cleaned up unless you actually got a successful write_file result for that exact file earlier in this same conversation — for every file you identified but did not actually call write_file on, say plainly that you did not get to it yet, do not imply it was done. Running a terminal command (run_terminal_command) always pauses for the user\'s explicit permission first, automatically — this is a fixed rule you cannot bypass, so just call it normally and respect the outcome.',
+    'You are in EDIT mode. ' +
+    APPLY_INSTRUCTION +
+    ' Edits apply immediately and the user sees a real diff with an undo option, so do not ask permission before editing files. ' +
+    TERMINAL_POLICY,
   auto:
-    'You are in AUTO mode: when the user asks you to fix, change, add, remove, refactor, or clean up something in the code, you MUST actually call write_file to make that change yourself — do not just describe the fix, list what should change, or show a hypothetical diff in your text response and stop there. Describing without calling write_file is treated as not having done the task. Only skip write_file if the user is purely asking a question with no request to change anything. Work autonomously through multi-step tasks — read, search, and edit as many files as needed via write_file without pausing to ask the user for confirmation on each edit. If a task touches many files, prioritize actually calling write_file on as many of them as you can over spending your budget only investigating — a partial set of real edits is much more useful than a complete list of edits you only described. In your final answer, NEVER say a file was fixed/changed/updated/cleaned up unless you actually got a successful write_file result for that exact file earlier in this same conversation — for every file you identified but did not actually call write_file on, say plainly that you did not get to it yet, do not imply it was done. Running a terminal command (run_terminal_command) still always pauses for the user\'s explicit permission first, automatically, in every mode including this one — this is a fixed safety rule you cannot bypass, so just call it normally and respect the outcome.'
+    'You are in AUTO mode. ' +
+    APPLY_INSTRUCTION +
+    ' Work autonomously through multi-step tasks — read, search, and edit as many files as needed via write_file without pausing to ask the user for confirmation on each edit. ' +
+    TERMINAL_POLICY
 }
 
 function toRelative(root: string, filePath: string): string {
   return filePath.startsWith(root) ? filePath.slice(root.length + 1) : filePath
 }
 
-// Prefixes each line with its real 1-based line number so the model can report
-// accurate LOC_START values instead of having to count lines itself.
 function withLineNumbers(content: string): string {
   return content
     .split('\n')
@@ -371,6 +413,43 @@ function requestTerminalPermission(
     win.webContents.send(`ai:permissionRequest:${requestId}`, { permissionId, command, cwd })
   })
   return { permissionId, allowed }
+}
+
+const PACKAGE_MANAGERS = new Set(['npm', 'yarn', 'pnpm'])
+const INSTALL_SUBCOMMANDS = new Set(['install', 'i', 'add', 'ci'])
+
+function commandNeedsPermission(command: string): boolean {
+  const trimmed = command.trim()
+  if (!trimmed) return true
+  if (/\bsudo\b/.test(trimmed)) return true
+
+  const segments = trimmed
+    .split(/&&|\|\||\||;/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+
+  return segments.some((seg) => {
+    const tokens = seg.split(/\s+/)
+    const base = tokens[0]
+    const rest = tokens.slice(1)
+
+    if (PACKAGE_MANAGERS.has(base) && rest.some((t) => INSTALL_SUBCOMMANDS.has(t))) return true
+    if ((base === 'pip' || base === 'pip3') && rest[0] === 'install') return true
+    if (base === 'gem' && rest[0] === 'install') return true
+    if (base === 'brew' && rest[0] === 'install') return true
+    if ((base === 'apt' || base === 'apt-get') && rest[0] === 'install') return true
+    if (base === 'cargo' && rest[0] === 'install') return true
+    if (base === 'go' && (rest[0] === 'get' || rest[0] === 'install')) return true
+    if (base === 'composer' && (rest[0] === 'install' || rest[0] === 'require')) return true
+
+    if (base === 'git' && rest[0] === 'push') return true
+    if (PACKAGE_MANAGERS.has(base) && rest[0] === 'publish') return true
+    if (base === 'docker' && rest[0] === 'push') return true
+
+    if (['curl', 'wget', 'http', 'httpie', 'nc', 'netcat', 'telnet', 'ssh', 'scp'].includes(base)) return true
+
+    return false
+  })
 }
 
 const COMMAND_TIMEOUT_MS = 60_000
@@ -490,6 +569,16 @@ async function executeAgentTool(
     if (!command) {
       return { progressLabel: 'No command given', resultForModel: 'Error: no command provided.' }
     }
+
+    if (!commandNeedsPermission(command)) {
+      const { output, error } = await runShellCommand(command, rootFolder)
+      win.webContents.send(`ai:commandAutoRun:${requestId}`, { command, output, error })
+      return {
+        progressLabel: error ? `Ran (auto): ${command} (failed)` : `Ran (auto): ${command}`,
+        resultForModel: `${error ? 'Command exited with an error.' : 'Command succeeded.'}\nOutput:\n${output}`
+      }
+    }
+
     const { permissionId, allowed: allowedPromise } = requestTerminalPermission(win, requestId, command, rootFolder)
     const allowed = await allowedPromise
     if (!allowed) {
@@ -581,39 +670,72 @@ async function runGeminiAgent(
         "real line number of the excerpt's first actual code line. The app strips this marker and uses it to " +
         'number the rest of the excerpt to match the real file, instead of always starting at 1.'
     }
+    const efficiencyInstruction = {
+      text:
+        'Each response turn you take costs one real API call against a tight rate limit (as low as 5 ' +
+        'requests/minute on the free tier), so minimize turns: whenever you know you need to call several ' +
+        'tools (e.g. reading multiple files, or running a search plus reading what it finds), issue all of ' +
+        'those tool calls together in the SAME turn instead of one at a time across separate turns. Only take ' +
+        'a new turn when you genuinely cannot decide the next call without seeing a previous result. Do not ' +
+        'sacrifice correctness for this — never skip reading a file you actually need — just batch what you ' +
+        'already know you need together rather than trickling calls out one by one.'
+    }
     const modeInstruction = { text: MODE_INSTRUCTIONS[mode] }
     const systemInstruction = converted.systemInstruction
-      ? { parts: [...converted.systemInstruction.parts, citationInstruction, modeInstruction] }
-      : { parts: [citationInstruction, modeInstruction] }
+      ? { parts: [...converted.systemInstruction.parts, citationInstruction, efficiencyInstruction, modeInstruction] }
+      : { parts: [citationInstruction, efficiencyInstruction, modeInstruction] }
     const tools = buildTools(mode)
 
     const allCandidates = await getCandidateModels(apiKey, preferredModel)
-    // Models that hit a rate limit during THIS request are skipped on later attempts
-    // within the same request (no point re-trying a bucket we just emptied), but a
-    // fresh request later will try them again from the top of the ranked list.
     const rateLimited = new Set<string>()
     let lastUsedModel = preferredModel
 
     async function callWithFallback(
       requestContents: GeminiContent[]
     ): Promise<{ model: string; data: GeminiGenerateResponse } | { error: string }> {
-      const ordered = allCandidates.filter((m) => !rateLimited.has(m))
-      const candidates = ordered.length > 0 ? ordered : allCandidates
-      const errors: string[] = []
+      let errors: string[] = []
 
-      for (const candidate of candidates) {
-        const result = await callGeminiOnce(
-          apiKey,
-          candidate,
-          requestContents,
-          systemInstruction,
-          tools,
-          controller.signal
-        )
-        if (result.ok) return { model: candidate, data: result.data }
-        errors.push(`${candidate} (${result.status}): ${result.text}`)
-        if (result.status === 429) rateLimited.add(candidate)
-        if (isNonRetryable(result.status)) break
+      for (let round = 0; round < 2; round++) {
+        const ordered = allCandidates.filter((m) => !rateLimited.has(m))
+        const candidates = ordered.length > 0 ? ordered : allCandidates
+        errors = []
+        let minRetryDelay: number | null = null
+        let allRateLimited = candidates.length > 0
+
+        for (const candidate of candidates) {
+          const result = await callGeminiOnce(
+            apiKey,
+            candidate,
+            requestContents,
+            systemInstruction,
+            tools,
+            controller.signal
+          )
+          if (result.ok) return { model: candidate, data: result.data }
+          errors.push(`${candidate} (${result.status}): ${result.text}`)
+          if (result.status === 429) {
+            rateLimited.add(candidate)
+            const delay = parseRetryDelaySeconds(result.text)
+            if (delay !== null) minRetryDelay = minRetryDelay === null ? delay : Math.min(minRetryDelay, delay)
+          } else {
+            allRateLimited = false
+          }
+          if (isNonRetryable(result.status)) {
+            allRateLimited = false
+            break
+          }
+        }
+
+        if (round === 1 || !allRateLimited || minRetryDelay === null) break
+
+        const waitSeconds = Math.min(minRetryDelay, MAX_RATE_LIMIT_WAIT_SECONDS)
+        win.webContents.send(channel('rateLimited'), waitSeconds)
+        try {
+          await sleepUnlessAborted(waitSeconds * 1000, controller.signal)
+        } catch {
+          return { error: 'Cancelled while waiting for the rate limit to reset.' }
+        }
+        rateLimited.clear()
       }
 
       return {
@@ -637,11 +759,6 @@ async function runGeminiAgent(
     lastUsedModel = model
 
     let toolCallCount = 0
-    // A multi-file Edit/Auto task needs a read_file + write_file per file on
-    // top of whatever search_files calls found them — a handful of files
-    // easily exceeds a small budget, which used to cut the model off mid-task
-    // and made it fall back to *describing* the remaining fixes as if it had
-    // already made them. Ask mode (pure exploration) keeps a smaller budget.
     const MAX_TOOL_CALLS = mode === 'ask' ? 12 : 40
     let emptyResponseRetried = false
 
@@ -657,8 +774,6 @@ async function runGeminiAgent(
           const finishReason = data.candidates?.[0]?.finishReason
           const blockReason = data.promptFeedback?.blockReason
 
-          // Blocked/filtered responses won't be fixed by asking again — surface
-          // the real reason instead of retrying pointlessly.
           if (blockReason || finishReason === 'SAFETY' || finishReason === 'RECITATION') {
             win.webContents.send(
               channel('error'),
@@ -667,9 +782,6 @@ async function runGeminiAgent(
             return
           }
 
-          // Otherwise (e.g. MAX_TOKENS after a long tool-use conversation, or a
-          // one-off empty turn), give it exactly one nudge to wrap up with an
-          // actual answer before giving up.
           if (!emptyResponseRetried) {
             emptyResponseRetried = true
             contents = [
@@ -803,9 +915,6 @@ export function registerGeminiHandlers(): void {
 
   ipcMain.handle('gemini:cancel', async (_e, requestId: string) => {
     activeRequests.get(requestId)?.abort()
-    // A cancelled request can be mid-await on a terminal permission prompt —
-    // resolve it as denied instead of leaving that promise (and the tool
-    // loop awaiting it) hanging forever.
     for (const [permissionId, resolve] of pendingPermissions) {
       if (permissionId.startsWith(`${requestId}-`)) {
         resolve(false)

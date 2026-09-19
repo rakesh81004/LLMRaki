@@ -29,7 +29,7 @@ export interface ChatMessage {
 
 export type SidebarView = 'explorer' | 'search' | 'sourceControl' | 'run' | 'extensions' | 'settings'
 
-export interface GitFileChange {
+interface GitFileChange {
   path: string
   index: string
   workingTree: string
@@ -87,8 +87,7 @@ export interface PermissionRequestEvent {
   cwd: string
 }
 
-export interface CommandResultEvent {
-  permissionId: string
+export interface CommandAutoRunEvent {
   command: string
   output: string
   error: boolean

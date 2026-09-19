@@ -1,15 +1,11 @@
 import type { DiffLine } from './diffParser'
 
-export type LineDiffOp =
+type LineDiffOp =
   | { type: 'equal'; text: string }
   | { type: 'delete'; text: string }
   | { type: 'insert'; text: string }
 
-/**
- * Myers O(ND) diff over two texts split into lines, used to visualize AI-made
- * file edits (which aren't a `git diff` — we only have the before/after file
- * content in memory) the same way the git-based diff viewer looks.
- */
+// Myers O(ND) diff, used to visualize AI-made edits (no git diff available) the same way the git-based viewer looks.
 export function diffLines(oldText: string, newText: string): LineDiffOp[] {
   const a = oldText.length > 0 ? oldText.split('\n') : []
   const b = newText.length > 0 ? newText.split('\n') : []

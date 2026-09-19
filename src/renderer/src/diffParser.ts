@@ -1,4 +1,4 @@
-export type DiffLineType = 'add' | 'remove' | 'context' | 'hunk'
+type DiffLineType = 'add' | 'remove' | 'context' | 'hunk'
 
 export interface DiffLine {
   type: DiffLineType
@@ -20,19 +20,13 @@ export interface FileDiff {
 
 const HUNK_HEADER = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/
 
+// Paths can contain spaces, so match via the a/ b/ markers rather than splitting on whitespace.
 function pathFromDiffGitLine(line: string): { a: string; b: string } | null {
-  // "diff --git a/foo/bar.ts b/foo/bar.ts" — paths can contain spaces, so we
-  // can't just split on whitespace; rely on the "a/" / "b/" markers instead.
   const match = line.match(/^diff --git a\/(.*) b\/(.*)$/)
   if (!match) return null
   return { a: match[1], b: match[2] }
 }
 
-/**
- * Parses `git diff` / `git show` unified-diff output (which may cover many
- * files) into per-file hunks with old/new line numbers, so the UI can render
- * a real added/removed gutter instead of a flat text dump.
- */
 export function parseUnifiedDiff(raw: string): FileDiff[] {
   const lines = raw.split('\n')
   const files: FileDiff[] = []
@@ -98,24 +92,15 @@ export function parseUnifiedDiff(raw: string): FileDiff[] {
       oldLineNo++
       newLineNo++
     }
-    // Anything else (e.g. "\ No newline at end of file") is ignored.
   }
 
   return files
 }
 
-export type DiffRenderItem =
+type DiffRenderItem =
   | { kind: 'line'; line: DiffLine }
   | { kind: 'collapsed'; lines: DiffLine[] }
 
-/**
- * Turns a file's flat line list (now covering the WHOLE file, since we ask
- * git for effectively unlimited unified context) into a sequence the UI can
- * render like a real "compare with previous commit" view: a few lines of
- * context next to each change stay visible, and long unchanged stretches
- * collapse into an expandable "N hidden lines" row instead of dumping the
- * entire file.
- */
 export function groupDiffLines(lines: DiffLine[], context = 3): DiffRenderItem[] {
   const visible = lines.filter((l) => l.type !== 'hunk')
   const items: DiffRenderItem[] = []

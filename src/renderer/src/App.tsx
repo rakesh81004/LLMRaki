@@ -180,6 +180,11 @@ export default function App(): JSX.Element {
     refreshRecents()
   }
 
+  function handleGoHome(): void {
+    setShowWelcomeTab(true)
+    setActivePath(WELCOME_TAB_ID)
+  }
+
   async function handleOpenRecentFolder(folderPath: string): Promise<void> {
     const result = await window.api.fs.openFolderAtPath(folderPath)
     if (!result) {
@@ -391,10 +396,7 @@ export default function App(): JSX.Element {
     ]
   }
 
-  // Best-effort recovery for paths that don't exist as given — e.g. an AI
-  // citation missing the true project-root prefix (`src/foo.ts` when the real
-  // path is `vnext/src/foo.ts`). Looks for a workspace file whose path ends
-  // with the same suffix, falling back to a basename match.
+  // Falls back to a suffix/basename match when an AI-cited path doesn't exist verbatim (e.g. missing project-root prefix).
   async function resolveMissingPath(citedPath: string): Promise<string | null> {
     if (!rootFolder) return null
     const files = await window.api.search.listFiles(rootFolder)
@@ -455,11 +457,6 @@ export default function App(): JSX.Element {
     }
   }
 
-  // After the AI agent writes or undoes a file directly on disk, sync any
-  // already-open tab for that path instead of leaving it showing stale
-  // content — mirrors how "openFileByPath" already skips re-reading a file
-  // that's just been switched to, except here the content genuinely changed
-  // out from under the editor.
   function reloadTabIfOpen(filePath: string): void {
     if (!tabs.some((t) => t.path === filePath)) {
       setTreeRefreshToken((t) => t + 1)
@@ -653,6 +650,7 @@ export default function App(): JSX.Element {
           gitBadge={gitChangeCount}
           onSelectSidebar={handleSelectSidebar}
           onToggleChat={() => setChatOpen((v) => !v)}
+          onGoHome={handleGoHome}
         />
 
         {sidebarView === 'explorer' && (

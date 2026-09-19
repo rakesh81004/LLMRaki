@@ -17,8 +17,6 @@ export interface ChatMessage {
 
 const activeRequests = new Map<string, AbortController>()
 
-// OpenAI accepts either a plain string `content` or an array of typed parts —
-// only switch to the array form for messages that actually carry images.
 function toOpenAiMessages(
   messages: ChatMessage[]
 ): { role: string; content: string | Array<Record<string, unknown>> }[] {
@@ -102,9 +100,7 @@ async function streamChat(
           if (delta) {
             win.webContents.send(channel('chunk'), delta)
           }
-        } catch {
-          // ignore malformed SSE fragments
-        }
+        } catch {}
       }
     }
     win.webContents.send(channel('done'))
@@ -121,10 +117,10 @@ async function streamChat(
 }
 
 export function registerAiHandlers(): void {
+  // The response streams back over events on ai:chunk:<id> / ai:done:<id> / ai:error:<id>, not the invoke's return value.
   ipcMain.handle('ai:sendMessage', async (event, requestId: string, messages: ChatMessage[]) => {
     const win = BrowserWindow.fromWebContents(event.sender)
     if (!win) return
-    // Fire and forget: streaming happens via events on ai:chunk:<id> / ai:done:<id> / ai:error:<id>
     void streamChat(win, requestId, messages)
   })
 

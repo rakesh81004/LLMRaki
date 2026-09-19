@@ -123,6 +123,12 @@ export interface CommandResultEvent {
   error: boolean
 }
 
+export interface CommandAutoRunEvent {
+  command: string
+  output: string
+  error: boolean
+}
+
 const api = {
   fs: {
     openFolder: (): Promise<OpenFolderResult | null> => ipcRenderer.invoke('fs:openFolder'),
@@ -207,6 +213,12 @@ const api = {
       ipcRenderer.on(channel, listener)
       return () => ipcRenderer.removeListener(channel, listener)
     },
+    onRateLimited: (requestId: string, cb: (waitSeconds: number) => void) => {
+      const channel = `ai:rateLimited:${requestId}`
+      const listener = (_e: Electron.IpcRendererEvent, waitSeconds: number) => cb(waitSeconds)
+      ipcRenderer.on(channel, listener)
+      return () => ipcRenderer.removeListener(channel, listener)
+    },
     onFileEdit: (requestId: string, cb: (edit: FileEditEvent) => void) => {
       const channel = `ai:fileEdit:${requestId}`
       const listener = (_e: Electron.IpcRendererEvent, edit: FileEditEvent) => cb(edit)
@@ -222,6 +234,12 @@ const api = {
     onCommandResult: (requestId: string, cb: (result: CommandResultEvent) => void) => {
       const channel = `ai:commandResult:${requestId}`
       const listener = (_e: Electron.IpcRendererEvent, result: CommandResultEvent) => cb(result)
+      ipcRenderer.on(channel, listener)
+      return () => ipcRenderer.removeListener(channel, listener)
+    },
+    onCommandAutoRun: (requestId: string, cb: (result: CommandAutoRunEvent) => void) => {
+      const channel = `ai:commandAutoRun:${requestId}`
+      const listener = (_e: Electron.IpcRendererEvent, result: CommandAutoRunEvent) => cb(result)
       ipcRenderer.on(channel, listener)
       return () => ipcRenderer.removeListener(channel, listener)
     },

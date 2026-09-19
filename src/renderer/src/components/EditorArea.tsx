@@ -50,9 +50,7 @@ export default function EditorArea({
     editorInstance.focus()
   }
 
-  // Handles the case where the target file is already open (and its Monaco
-  // instance already mounted) — a fresh mount is instead handled in onMount
-  // below, since editorRef here can still point at a just-unmounted editor.
+  // Handles the file-already-open case; a fresh mount is handled separately in onMount since editorRef may still point at a just-unmounted editor.
   useEffect(() => {
     if (revealLine !== null && editorRef.current) {
       revealLineNow(editorRef.current, revealLine)
@@ -119,7 +117,7 @@ export default function EditorArea({
           key={activeTab.path}
           language={languageForFile(activeTab.name)}
           value={activeTab.content}
-          theme="vs-dark"
+          theme="llmraki-dark"
           onChange={(value) => onChange(activeTab.path, value ?? '')}
           onMount={(editorInstance, monaco) => {
             editorRef.current = editorInstance
