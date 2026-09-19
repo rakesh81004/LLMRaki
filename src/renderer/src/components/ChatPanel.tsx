@@ -398,10 +398,20 @@ export default function ChatPanel({
     window.api.chatHistory.listConversations(historyKey).then((list) => {
       if (cancelled) return
       setConversationList(list)
-      const freshId = makeId()
-      setMessages([])
-      setConversationId(freshId)
-      loadedRef.current = `${historyKey}::${freshId}`
+      if (list.length > 0 && rootFolder) {
+        const mostRecent = list[0]
+        window.api.chatHistory.getConversation(historyKey, mostRecent.id).then((loaded) => {
+          if (cancelled) return
+          setMessages(loaded as DisplayMessage[])
+          setConversationId(mostRecent.id)
+          loadedRef.current = `${historyKey}::${mostRecent.id}`
+        })
+      } else {
+        const freshId = makeId()
+        setMessages([])
+        setConversationId(freshId)
+        loadedRef.current = `${historyKey}::${freshId}`
+      }
     })
     return () => {
       cancelled = true
@@ -918,19 +928,21 @@ export default function ChatPanel({
       </div>
 
       <div className="chat-messages">
+        {messages.length === 0 && !rootFolder && conversationList.length > 0 && (
+          <div className="chat-recent-list chat-recent-list-top">
+            <div className="chat-recent-heading">
+              <ClockIcon /> Recent chats
+            </div>
+            {conversationList.slice(0, 5).map((c) => (
+              <div key={c.id} onClick={() => loadConversation(c.id)} className="chat-recent-item">
+                <div className="chat-recent-item-title">{c.title}</div>
+                <div className="chat-recent-item-time">{timeAgo(c.updatedAt)}</div>
+              </div>
+            ))}
+          </div>
+        )}
         {messages.length === 0 && (
           <div className="chat-empty-state">
-            {!rootFolder && conversationList.length > 0 && (
-              <div className="chat-recent-list">
-                <div className="chat-recent-heading">Recent chats</div>
-                {conversationList.slice(0, 5).map((c) => (
-                  <div key={c.id} onClick={() => loadConversation(c.id)} className="chat-recent-item">
-                    <div className="chat-recent-item-title">{c.title}</div>
-                    <div className="chat-recent-item-time">{timeAgo(c.updatedAt)}</div>
-                  </div>
-                ))}
-              </div>
-            )}
             <div className="chat-empty-brand">
               <img src={appLogo} alt="LLMRaki" className="chat-empty-logo" />
               <div className="chat-empty-title">LLMRaki</div>
