@@ -482,6 +482,26 @@ export default function App(): JSX.Element {
     setGitRefreshToken((t) => t + 1)
   }
 
+  // A terminal command run by the AI can touch any number of files without telling us which —
+  // unlike write_file, there's no single path to reload, so refresh the whole workspace: the file
+  // tree, git status, and any open-but-unedited tab that might now be showing stale content.
+  function refreshWorkspaceAfterTerminal(): void {
+    tabs
+      .filter((t) => !t.isDirty && !t.isUntitled)
+      .forEach((t) => {
+        window.api.fs
+          .readFile(t.path)
+          .then((content) => {
+            setTabs((cur) =>
+              cur.map((c) => (c.path === t.path && !c.isDirty ? { ...c, content, savedContent: content } : c))
+            )
+          })
+          .catch(() => {})
+      })
+    setTreeRefreshToken((t) => t + 1)
+    setGitRefreshToken((t) => t + 1)
+  }
+
   async function handleOpenFile(entry: FileEntry): Promise<void> {
     await openFileByPath(entry.path)
   }
@@ -640,7 +660,13 @@ export default function App(): JSX.Element {
     <div className="app-shell">
       <div className="app-titlebar">
         <div className="titlebar-side left">{rootFolder ? rootFolder.split(/[/\\]/).pop() : 'LLMRaki'}</div>
-        <TopSearchBar rootFolder={rootFolder} onOpenFile={(filePath) => openFileByPath(filePath)} />
+        <TopSearchBar
+          rootFolder={rootFolder}
+          onOpenFile={(filePath) => {
+            setSidebarView('explorer')
+            openFileByPath(filePath)
+          }}
+        />
         <div className="titlebar-side right" />
       </div>
       <div className="app-body">
@@ -715,6 +741,7 @@ export default function App(): JSX.Element {
             <EditorArea
               tabs={tabs}
               activePath={activePath}
+              rootFolder={rootFolder}
               revealLine={revealTarget?.path === activePath ? revealTarget.line : null}
               showWelcomeTab={showWelcomeTab}
               onSelectTab={setActivePath}
@@ -723,6 +750,7 @@ export default function App(): JSX.Element {
               onSave={handleSave}
               onCursorChange={(line, column) => setCursor({ line, column })}
               onRevealed={() => setRevealTarget(null)}
+              onOpenFile={(filePath) => openFileByPath(filePath)}
               welcomeProps={{
                 recentFolders,
                 onNewFile: handleNewFile,
@@ -744,6 +772,7 @@ export default function App(): JSX.Element {
                   forceIncludeSignal={chatIncludeSignal}
                   onFileChanged={reloadTabIfOpen}
                   onFileRemoved={closeTabIfOpen}
+                  onWorkspaceChanged={refreshWorkspaceAfterTerminal}
                 />
               </>
             )}

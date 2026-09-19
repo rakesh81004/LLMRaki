@@ -52,6 +52,14 @@ export interface GitCommit {
   refs: string[]
 }
 
+export interface BlameLine {
+  line: number
+  hash: string
+  author: string
+  authorTime: number
+  summary: string
+}
+
 export interface TextSearchOptions {
   caseSensitive?: boolean
   wholeWord?: boolean
@@ -282,7 +290,9 @@ const api = {
     pull: (root: string): Promise<void> => ipcRenderer.invoke('git:pull', root),
     log: (root: string, limit?: number): Promise<GitCommit[]> =>
       ipcRenderer.invoke('git:log', root, limit),
-    show: (root: string, hash: string): Promise<string> => ipcRenderer.invoke('git:show', root, hash)
+    show: (root: string, hash: string): Promise<string> => ipcRenderer.invoke('git:show', root, hash),
+    blameFile: (root: string, filePath: string): Promise<BlameLine[]> =>
+      ipcRenderer.invoke('git:blameFile', root, filePath)
   },
   search: {
     listFiles: (root: string): Promise<string[]> => ipcRenderer.invoke('search:listFiles', root),

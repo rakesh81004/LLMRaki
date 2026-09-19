@@ -56,6 +56,14 @@ export interface GitCommit {
   refs: string[]
 }
 
+export interface BlameLine {
+  line: number
+  hash: string
+  author: string
+  authorTime: number
+  summary: string
+}
+
 export interface SearchMatch {
   file: string
   line: number

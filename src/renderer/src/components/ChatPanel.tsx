@@ -83,6 +83,7 @@ interface Props {
   forceIncludeSignal: number
   onFileChanged: (path: string) => void
   onFileRemoved: (path: string) => void
+  onWorkspaceChanged: () => void
 }
 
 const GLOBAL_HISTORY_KEY = '__global__'
@@ -316,7 +317,8 @@ export default function ChatPanel({
   onOpenSettings,
   forceIncludeSignal,
   onFileChanged,
-  onFileRemoved
+  onFileRemoved,
+  onWorkspaceChanged
 }: Props): JSX.Element {
   const [messages, setMessages] = useState<DisplayMessage[]>([])
   const [agentMode, setAgentMode] = useState<AgentMode>(() => {
@@ -658,6 +660,7 @@ export default function ChatPanel({
       })
     })
     const offCommandResult = window.api.ai.onCommandResult(requestId, (result) => {
+      onWorkspaceChanged()
       setMessages((prev) => {
         const copy = [...prev]
         const last = copy[copy.length - 1]
@@ -676,6 +679,7 @@ export default function ChatPanel({
     })
 
     const offCommandAutoRun = window.api.ai.onCommandAutoRun(requestId, (run) => {
+      onWorkspaceChanged()
       setMessages((prev) => {
         const copy = [...prev]
         const last = copy[copy.length - 1]

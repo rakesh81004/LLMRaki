@@ -24,6 +24,35 @@ export default function TreeItem({
   const [children, setChildren] = useState<FileEntry[] | null>(null)
   const [loading, setLoading] = useState(false)
   const mountedRef = useRef(false)
+  const rowRef = useRef<HTMLDivElement>(null)
+  const isSelected = selectedPath === entry.path
+
+  useEffect(() => {
+    if (isSelected) rowRef.current?.scrollIntoView({ block: 'nearest' })
+  }, [isSelected])
+
+  // Automatically expand if the selected path is inside this directory
+  useEffect(() => {
+    const normSelected = selectedPath?.replace(/\\/g, '/')
+    const normEntry = entry.path.replace(/\\/g, '/')
+
+    if (
+      normSelected &&
+      normSelected.startsWith(normEntry + '/') &&
+      entry.isDirectory &&
+      !expanded &&
+      !loading
+    ) {
+      setExpanded(true)
+      if (children === null) {
+        setLoading(true)
+        window.api.fs.readDir(entry.path).then((result) => {
+          setChildren(result)
+          setLoading(false)
+        })
+      }
+    }
+  }, [selectedPath, entry.path, entry.isDirectory, expanded, loading, children])
 
   async function handleClick(): Promise<void> {
     if (!entry.isDirectory) {
@@ -57,7 +86,8 @@ export default function TreeItem({
   return (
     <div>
       <div
-        className={`tree-item ${selectedPath === entry.path ? 'selected' : ''}`}
+        ref={rowRef}
+        className={`tree-item ${isSelected ? 'selected' : ''}`}
         style={{ paddingLeft: 8 + depth * 14 }}
         onClick={handleClick}
         onContextMenu={(e) => {

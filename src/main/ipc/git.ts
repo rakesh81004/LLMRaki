@@ -34,6 +34,48 @@ export interface GitCommit {
   refs: string[]
 }
 
+export interface BlameLine {
+  line: number
+  hash: string
+  author: string
+  authorTime: number
+  summary: string
+}
+
+// --line-porcelain repeats the full commit header before every line (instead of just the
+// first line of each run), which trades a bit of output size for much simpler parsing.
+function parseBlame(raw: string): BlameLine[] {
+  const lines = raw.split('\n')
+  const result: BlameLine[] = []
+  let hash = ''
+  let finalLine = 0
+  let author = ''
+  let authorTime = 0
+  let summary = ''
+  const shaLineRe = /^([0-9a-f]{40}) \d+ (\d+)(?: \d+)?$/
+
+  for (const line of lines) {
+    const shaMatch = line.match(shaLineRe)
+    if (shaMatch) {
+      hash = shaMatch[1]
+      finalLine = parseInt(shaMatch[2], 10)
+      continue
+    }
+    if (line.startsWith('author ')) {
+      author = line.slice('author '.length)
+    } else if (line.startsWith('author-time ')) {
+      authorTime = parseInt(line.slice('author-time '.length), 10)
+    } else if (line.startsWith('summary ')) {
+      summary = line.slice('summary '.length)
+    } else if (line.startsWith('\t')) {
+      if (hash && finalLine) {
+        result.push({ line: finalLine, hash, author, authorTime, summary })
+      }
+    }
+  }
+  return result
+}
+
 async function runGit(cwd: string, args: string[]): Promise<string> {
   const { stdout } = await execFileAsync('git', args, { cwd, maxBuffer: 20 * 1024 * 1024 })
   return stdout
@@ -191,4 +233,17 @@ export function registerGitHandlers(): void {
       return []
     }
   })
+
+  ipcMain.handle(
+    'git:blameFile',
+    async (_e, root: string, filePath: string): Promise<BlameLine[]> => {
+      const rel = path.isAbsolute(filePath) ? path.relative(root, filePath) : filePath
+      try {
+        const raw = await runGit(root, ['blame', '--line-porcelain', '-w', '--', rel])
+        return parseBlame(raw)
+      } catch {
+        return []
+      }
+    }
+  )
 }

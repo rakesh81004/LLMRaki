@@ -1,6 +1,6 @@
 import { RecentFolder } from '../types'
 import { FilesIcon, FolderIcon, CloseIcon } from './Icons'
-import heroImage from '../assets/welcome-hero-hd.jpg'
+import heroImage from '../assets/llm-real-background.jpg'
 
 interface Props {
   recentFolders: RecentFolder[]
