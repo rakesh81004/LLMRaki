@@ -1027,13 +1027,21 @@ export default function ChatPanel({
                 </div>
               )}
               {m.progressSteps && m.progressSteps.length > 0 && (
-                <details className="chat-progress" open={isLast && streaming}>
+                <details className="chat-progress">
                   <summary>
-                    {isLast && streaming ? 'Exploring' : 'Explored'}{' '}
-                    <span className="chat-progress-muted">
-                      {readCount} file{readCount === 1 ? '' : 's'}, {searchCount} search
-                      {searchCount === 1 ? '' : 'es'}
-                    </span>
+                    {isLast && streaming ? (
+                      <span key={m.progressSteps.length} className="chat-progress-live">
+                        {m.progressSteps[m.progressSteps.length - 1]}
+                      </span>
+                    ) : (
+                      <>
+                        Explored{' '}
+                        <span className="chat-progress-muted">
+                          {readCount} file{readCount === 1 ? '' : 's'}, {searchCount} search
+                          {searchCount === 1 ? '' : 'es'}
+                        </span>
+                      </>
+                    )}
                   </summary>
                   <div className="chat-progress-steps">
                     {m.progressSteps.map((s, idx) => (

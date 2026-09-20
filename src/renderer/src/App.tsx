@@ -16,7 +16,8 @@ import CommandPalette, { Command } from './components/CommandPalette'
 import ContextMenu, { ContextMenuEntry } from './components/ContextMenu'
 import InputModal from './components/InputModal'
 import { languageForFile } from './utils/language'
-import { SidebarView, FileEntry, OpenTab, GitStatus, RecentFolder, WELCOME_TAB_ID } from './types'
+import { SidebarView, FileEntry, OpenTab, DiffTab, GitStatus, RecentFolder, WELCOME_TAB_ID } from './types'
+import appLogo from './assets/app-logo.png'
 
 const COMMANDS: Command[] = [
   { id: 'show-welcome', label: 'Help: Welcome' },
@@ -39,11 +40,19 @@ const COMMANDS: Command[] = [
 
 let untitledCounter = 0
 
+// A tab's identity is its `id`, not its `path` — the same file can be open as two independent,
+// coexisting tabs (a plain view and a "Working Tree" diff view), sharing a path but not an id.
+function tabIdFor(path: string, diffMode?: boolean): string {
+  return diffMode ? `${path}::workingtree` : path
+}
+
 export default function App(): JSX.Element {
-  const [sidebarView, setSidebarView] = useState<SidebarView | null>('explorer')
+  const [booting, setBooting] = useState(true)
+  const [sidebarView, setSidebarView] = useState<SidebarView | null>(null)
   const [rootFolder, setRootFolder] = useState<string | null>(null)
   const [rootEntries, setRootEntries] = useState<FileEntry[]>([])
   const [tabs, setTabs] = useState<OpenTab[]>([])
+  const [diffTabs, setDiffTabs] = useState<DiffTab[]>([])
   const [activePath, setActivePath] = useState<string | null>(WELCOME_TAB_ID)
   const [showWelcomeTab, setShowWelcomeTab] = useState(true)
   const [recentFolders, setRecentFolders] = useState<RecentFolder[]>([])
@@ -159,7 +168,7 @@ export default function App(): JSX.Element {
   const [treeRefreshToken, setTreeRefreshToken] = useState(0)
   const [chatIncludeSignal, setChatIncludeSignal] = useState(0)
 
-  const activeTab = tabs.find((t) => t.path === activePath) ?? null
+  const activeTab = tabs.find((t) => t.id === activePath) ?? null
 
   function refreshRecents(): void {
     window.api.settings.getRecentFolders().then(setRecentFolders)
@@ -167,6 +176,27 @@ export default function App(): JSX.Element {
 
   useEffect(() => {
     refreshRecents()
+  }, [])
+
+  useEffect(() => {
+    const t = setTimeout(() => setBooting(false), 1000)
+    return () => clearTimeout(t)
+  }, [])
+
+  useEffect(() => {
+    window.api.fs.watchRoot(rootFolder)
+  }, [rootFolder])
+
+  const refreshWorkspaceRef = useRef(refreshWorkspaceAfterTerminal)
+  refreshWorkspaceRef.current = refreshWorkspaceAfterTerminal
+
+  useEffect(() => {
+    const off = window.api.fs.onChanged(() => {
+      refreshWorkspaceRef.current()
+    })
+    return () => {
+      off()
+    }
   }, [])
 
   async function handleOpenFolder(): Promise<void> {
@@ -226,9 +256,17 @@ export default function App(): JSX.Element {
   function renamePathInOpenState(oldPath: string, newPath: string): void {
     const newName = basename(newPath)
     setTabs((prev) =>
-      prev.map((t) => (t.path === oldPath ? { ...t, path: newPath, name: newName } : t))
+      prev.map((t) =>
+        t.path === oldPath
+          ? { ...t, path: newPath, name: newName, id: tabIdFor(newPath, t.diffMode) }
+          : t
+      )
     )
-    setActivePath((current) => (current === oldPath ? newPath : current))
+    setActivePath((current) => {
+      if (current === tabIdFor(oldPath, false)) return tabIdFor(newPath, false)
+      if (current === tabIdFor(oldPath, true)) return tabIdFor(newPath, true)
+      return current
+    })
   }
 
   function closeAndForgetPath(targetPath: string, isDirectory: boolean): void {
@@ -237,7 +275,9 @@ export default function App(): JSX.Element {
     )
     setActivePath((current) => {
       if (!current) return current
-      const matches = isDirectory ? current.startsWith(targetPath) : current === targetPath
+      const matches = isDirectory
+        ? current.startsWith(targetPath)
+        : current === tabIdFor(targetPath, false) || current === tabIdFor(targetPath, true)
       return matches ? null : current
     })
   }
@@ -408,10 +448,15 @@ export default function App(): JSX.Element {
     return baseMatch ?? null
   }
 
-  async function openFileByPath(filePath: string, line?: number): Promise<void> {
-    const existing = tabs.find((t) => t.path === filePath)
+  // `diffMode` picks which of the (up to) two coexisting tabs for this path to open/focus: the
+  // plain tab (id === path) or the "Working Tree" diff tab (id === `${path}::workingtree`).
+  // Opening via a plain route (Explorer, search, breadcrumbs) always targets the plain one;
+  // opening via Source Control's "Changes" row always targets the working-tree one.
+  async function openFileByPath(filePath: string, line?: number, diffMode = false): Promise<void> {
+    const id = tabIdFor(filePath, diffMode)
+    const existing = tabs.find((t) => t.id === id)
     if (existing) {
-      setActivePath(filePath)
+      setActivePath(id)
       if (line) setRevealTarget({ path: filePath, line })
       return
     }
@@ -426,9 +471,10 @@ export default function App(): JSX.Element {
         window.alert(`Couldn't open "${filePath}" — no matching file found in this project.`)
         return
       }
-      const existingFallback = tabs.find((t) => t.path === fallback)
+      const fallbackId = tabIdFor(fallback, diffMode)
+      const existingFallback = tabs.find((t) => t.id === fallbackId)
       if (existingFallback) {
-        setActivePath(fallback)
+        setActivePath(fallbackId)
         if (line) setRevealTarget({ path: fallback, line })
         return
       }
@@ -443,15 +489,17 @@ export default function App(): JSX.Element {
 
     const name = resolvedPath.split(/[/\\]/).pop() ?? resolvedPath
     const tab: OpenTab = {
+      id: tabIdFor(resolvedPath, diffMode),
       path: resolvedPath,
       name,
       content,
       savedContent: content,
       isDirty: false,
-      isUntitled: false
+      isUntitled: false,
+      diffMode
     }
     setTabs((prev) => [...prev, tab])
-    setActivePath(resolvedPath)
+    setActivePath(tab.id)
     if (line) {
       setRevealTarget({ path: resolvedPath, line })
     }
@@ -477,7 +525,9 @@ export default function App(): JSX.Element {
 
   function closeTabIfOpen(filePath: string): void {
     setTabs((prev) => prev.filter((t) => t.path !== filePath))
-    setActivePath((prev) => (prev === filePath ? null : prev))
+    setActivePath((prev) =>
+      prev === tabIdFor(filePath, false) || prev === tabIdFor(filePath, true) ? null : prev
+    )
     setTreeRefreshToken((t) => t + 1)
     setGitRefreshToken((t) => t + 1)
   }
@@ -510,6 +560,7 @@ export default function App(): JSX.Element {
     untitledCounter += 1
     const path = `untitled:${untitledCounter}`
     const tab: OpenTab = {
+      id: path,
       path,
       name: `Untitled-${untitledCounter}`,
       content: '',
@@ -521,55 +572,91 @@ export default function App(): JSX.Element {
     setActivePath(path)
   }
 
-  function handleChange(path: string, content: string): void {
+  function handleChange(id: string, content: string): void {
     setTabs((prev) =>
-      prev.map((t) => (t.path === path ? { ...t, content, isDirty: content !== t.savedContent } : t))
+      prev.map((t) => (t.id === id ? { ...t, content, isDirty: content !== t.savedContent } : t))
     )
   }
 
-  async function handleSave(path: string, forceSaveAs = false): Promise<void> {
-    const tab = tabs.find((t) => t.path === path)
+  async function handleSave(id: string, forceSaveAs = false): Promise<void> {
+    const tab = tabs.find((t) => t.id === id)
     if (!tab) return
 
     if (tab.isUntitled || forceSaveAs) {
-      const target = await window.api.fs.showSaveDialog(tab.isUntitled ? tab.name : path)
+      const target = await window.api.fs.showSaveDialog(tab.isUntitled ? tab.name : tab.path)
       if (!target) return
       await window.api.fs.writeFile(target, tab.content)
       const name = target.split(/[/\\]/).pop() ?? target
+      const newId = tabIdFor(target, tab.diffMode)
       setTabs((prev) =>
         prev.map((t) =>
-          t.path === path
-            ? { ...t, path: target, name, savedContent: t.content, isDirty: false, isUntitled: false }
+          t.id === id
+            ? { ...t, id: newId, path: target, name, savedContent: t.content, isDirty: false, isUntitled: false }
             : t
         )
       )
-      if (activePath === path) setActivePath(target)
+      if (activePath === id) setActivePath(newId)
     } else {
-      await window.api.fs.writeFile(path, tab.content)
+      await window.api.fs.writeFile(tab.path, tab.content)
       setTabs((prev) =>
-        prev.map((t) => (t.path === path ? { ...t, savedContent: t.content, isDirty: false } : t))
+        prev.map((t) => (t.id === id ? { ...t, savedContent: t.content, isDirty: false } : t))
       )
     }
     setGitRefreshToken((t) => t + 1)
   }
 
-  function handleCloseTab(path: string): void {
-    if (path === WELCOME_TAB_ID) {
+  function handleCloseTab(id: string): void {
+    if (id === WELCOME_TAB_ID) {
       setShowWelcomeTab(false)
       if (activePath === WELCOME_TAB_ID) {
-        setActivePath(tabs.length > 0 ? tabs[tabs.length - 1].path : null)
+        setActivePath(tabs.length > 0 ? tabs[tabs.length - 1].id : null)
       }
       return
     }
-    const tab = tabs.find((t) => t.path === path)
+    const tab = tabs.find((t) => t.id === id)
     if (tab?.isDirty) {
       const confirmed = window.confirm(`"${tab.name}" has unsaved changes. Close anyway?`)
       if (!confirmed) return
     }
-    setTabs((prev) => prev.filter((t) => t.path !== path))
-    if (activePath === path) {
-      const remaining = tabs.filter((t) => t.path !== path)
-      setActivePath(remaining.length > 0 ? remaining[remaining.length - 1].path : null)
+    setTabs((prev) => prev.filter((t) => t.id !== id))
+    if (activePath === id) {
+      const remaining = tabs.filter((t) => t.id !== id)
+      setActivePath(remaining.length > 0 ? remaining[remaining.length - 1].id : null)
+    }
+  }
+
+  function handleReorderTabs(fromIndex: number, toIndex: number): void {
+    setTabs((prev) => {
+      const copy = [...prev]
+      const [moved] = copy.splice(fromIndex, 1)
+      copy.splice(toIndex, 0, moved)
+      return copy
+    })
+  }
+
+  // Diff tabs (Source Control "Working Tree" / "Index" views) are a separate list from real file
+  // tabs so a file already open for editing and its git diff can coexist as distinct tabs.
+  function openDiffTab(gitRoot: string, relPath: string): void {
+    const id = `${gitRoot}/${relPath}::index`
+    setDiffTabs((prev) =>
+      prev.some((d) => d.id === id)
+        ? prev
+        : [...prev, { id, gitRoot, relPath, name: relPath.split(/[/\\]/).pop() ?? relPath }]
+    )
+    setActivePath(id)
+  }
+
+  function handleCloseDiffTab(id: string): void {
+    setDiffTabs((prev) => prev.filter((d) => d.id !== id))
+    if (activePath === id) {
+      const remaining = diffTabs.filter((d) => d.id !== id)
+      setActivePath(
+        remaining.length > 0
+          ? remaining[remaining.length - 1].id
+          : tabs.length > 0
+            ? tabs[tabs.length - 1].path
+            : null
+      )
     }
   }
 
@@ -657,7 +744,11 @@ export default function App(): JSX.Element {
     : 0
 
   return (
-    <div className="app-shell">
+    <>
+      <div className={`app-splash ${booting ? '' : 'app-splash-hidden'}`}>
+        <img src={appLogo} alt="LLMRaki" className="app-splash-logo" />
+      </div>
+      <div className="app-shell">
       <div className="app-titlebar">
         <div className="titlebar-side left">{rootFolder ? rootFolder.split(/[/\\]/).pop() : 'LLMRaki'}</div>
         <TopSearchBar
@@ -703,7 +794,8 @@ export default function App(): JSX.Element {
           <div className="sidebar" style={{ width: sidebarWidth }}>
             <SourceControlPanel
               rootFolder={rootFolder}
-              onOpenFile={(p) => openFileByPath(p)}
+              onOpenFile={(p, diffMode) => openFileByPath(p, undefined, diffMode)}
+              onOpenDiffTab={openDiffTab}
               onStatusChange={setGitStatus}
               refreshToken={gitRefreshToken}
             />
@@ -740,12 +832,15 @@ export default function App(): JSX.Element {
           <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
             <EditorArea
               tabs={tabs}
+              diffTabs={diffTabs}
               activePath={activePath}
               rootFolder={rootFolder}
               revealLine={revealTarget?.path === activePath ? revealTarget.line : null}
               showWelcomeTab={showWelcomeTab}
               onSelectTab={setActivePath}
               onCloseTab={handleCloseTab}
+              onReorderTabs={handleReorderTabs}
+              onCloseDiffTab={handleCloseDiffTab}
               onChange={handleChange}
               onSave={handleSave}
               onCursorChange={(line, column) => setCursor({ line, column })}
@@ -859,6 +954,7 @@ export default function App(): JSX.Element {
           onClose={() => setInputModal(null)}
         />
       )}
-    </div>
+      </div>
+    </>
   )
 }

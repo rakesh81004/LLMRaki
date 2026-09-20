@@ -107,6 +107,39 @@ textarea:focus {
   height: 100vh;
 }
 
+.app-splash {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: #000000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 1;
+  transition: opacity 0.4s ease;
+}
+.app-splash-hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+.app-splash-logo {
+  width: 96px;
+  height: 96px;
+  border-radius: 22px;
+  animation: app-splash-pulse 1.4s ease-in-out infinite;
+}
+@keyframes app-splash-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    filter: drop-shadow(0 0 10px rgba(var(--glow-rgb), 0.3));
+  }
+  50% {
+    transform: scale(1.06);
+    filter: drop-shadow(0 0 22px rgba(var(--glow-rgb), 0.6));
+  }
+}
+
 .app-titlebar {
   height: 38px;
   -webkit-app-region: drag;
@@ -379,12 +412,30 @@ textarea:focus {
   font-weight: 700;
   margin-left: 2px;
 }
-.scm-file-name {
+.scm-file-info {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
   flex: 1;
   min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
+}
+.scm-file-name {
+  color: var(--text-primary);
+  font-size: 12px;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 1;
+}
+.scm-file-dir {
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 2;
+  opacity: 0.75;
 }
 .scm-row-btn {
   background: none;
@@ -522,8 +573,16 @@ textarea:focus {
 }
 
 .editor-tab.active {
-  background: var(--bg-editor);
+  background: rgba(var(--glow-rgb), 0.16);
   color: var(--text-primary);
+  border: 1px solid rgba(var(--glow-rgb), 0.5);
+}
+
+.editor-tab[draggable='true'] {
+  cursor: grab;
+}
+.editor-tab.dragging {
+  opacity: 0.4;
 }
 
 .editor-tab .dirty-dot {
@@ -531,6 +590,22 @@ textarea:focus {
   height: 8px;
   border-radius: 50%;
   background: var(--text-primary);
+  flex-shrink: 0;
+}
+
+.editor-tab.diff-tab .diff-tab-suffix {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-style: italic;
+  white-space: nowrap;
+}
+.editor-tab.diff-tab.active .diff-tab-suffix {
+  color: var(--accent-bright);
+}
+.editor-tab.diff-tab .diff-tab-lock {
+  display: flex;
+  align-items: center;
+  color: var(--text-muted);
   flex-shrink: 0;
 }
 
@@ -1195,6 +1270,28 @@ textarea:focus {
 .chat-progress-muted {
   color: var(--text-muted);
   font-weight: 400;
+}
+.chat-progress-live {
+  color: var(--text-muted);
+  font-weight: 400;
+  font-style: italic;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
+  max-width: 100%;
+  vertical-align: bottom;
+  animation: chat-progress-live-fade 0.25s ease;
+}
+@keyframes chat-progress-live-fade {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 .chat-progress-steps {
   margin-top: 4px;

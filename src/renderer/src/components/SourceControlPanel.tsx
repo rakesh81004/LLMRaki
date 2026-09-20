@@ -3,19 +3,65 @@ import { GitStatus, GitCommit } from '../types'
 import { buildGitGraph, parseRefs, REF_KIND_COLORS, RefKind } from '../gitGraph'
 import { parseUnifiedDiff, FileDiff } from '../diffParser'
 import DiffLinesView from './DiffLinesView'
-import { diffLines, opsToDiffLines, diffStats } from '../lineDiff'
 import FileTypeBadge from './FileTypeBadge'
+import { EyeIcon } from './Icons'
 
 interface Props {
   rootFolder: string | null
-  onOpenFile: (filePath: string) => void
+  onOpenFile: (filePath: string, diffMode?: boolean) => void
+  onOpenDiffTab: (gitRoot: string, relPath: string) => void
   onStatusChange: (status: GitStatus | null) => void
   refreshToken: number
+}
+
+// Matches VS Code's Source Control ordering: a file directly in a directory is listed before
+// any path that continues into a subdirectory at that same point (files-before-folders, applied
+// level by level), falling back to plain alphabetical comparison within the same group — not the
+// flat lexicographic order `git status --porcelain` returns paths in, which interleaves them.
+function compareGitPaths(a: string, b: string): number {
+  const aParts = a.split('/')
+  const bParts = b.split('/')
+  const len = Math.min(aParts.length, bParts.length)
+  for (let i = 0; i < len; i++) {
+    const aIsLast = i === aParts.length - 1
+    const bIsLast = i === bParts.length - 1
+    if (aIsLast !== bIsLast) return aIsLast ? -1 : 1
+    if (aParts[i] !== bParts[i]) return aParts[i] < bParts[i] ? -1 : 1
+  }
+  return aParts.length - bParts.length
+}
+
+function splitGitPath(path: string): { name: string; dir: string } {
+  const normalized = path.replace(/\\/g, '/')
+  const lastSlash = normalized.lastIndexOf('/')
+  if (lastSlash === -1) {
+    return { name: normalized, dir: '' }
+  }
+  return {
+    name: normalized.slice(lastSlash + 1),
+    dir: normalized.slice(0, lastSlash)
+  }
+}
+
+function getStatusColor(statusLetter: string): string {
+  switch (statusLetter) {
+    case 'M':
+      return '#e2c08d' // Amber/yellow
+    case 'A':
+    case 'U':
+    case '?':
+      return 'var(--success)' // Green
+    case 'D':
+      return 'var(--danger)' // Red
+    default:
+      return 'var(--text-muted)'
+  }
 }
 
 export default function SourceControlPanel({
   rootFolder,
   onOpenFile,
+  onOpenDiffTab,
   onStatusChange,
   refreshToken
 }: Props): JSX.Element {
@@ -139,40 +185,6 @@ export default function SourceControlPanel({
     refresh()
   }
 
-  async function handleViewDiff(path: string, staged: boolean): Promise<void> {
-    if (!gitRoot) return
-    const text = await window.api.git.diff(gitRoot, path, staged)
-    setSelectedDiffFile(0)
-    setDiff({ title: path, files: parseUnifiedDiff(text) })
-  }
-
-  async function handleViewUntrackedDiff(path: string): Promise<void> {
-    if (!gitRoot) return
-    try {
-      const content = await window.api.fs.readFile(`${gitRoot}/${path}`)
-      const ops = diffLines('', content)
-      const stats = diffStats(ops)
-      setSelectedDiffFile(0)
-      setDiff({
-        title: path,
-        files: [
-          {
-            path,
-            oldPath: null,
-            isNew: true,
-            isDeleted: false,
-            isRenamed: false,
-            added: stats.added,
-            removed: stats.removed,
-            lines: opsToDiffLines(ops)
-          }
-        ]
-      })
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    }
-  }
-
   async function handleCommit(): Promise<void> {
     if (!gitRoot || !message.trim() || !status) return
     setBusy(true)
@@ -254,31 +266,34 @@ export default function SourceControlPanel({
   const gitRootLabel =
     gitRoot !== rootFolder ? gitRoot.slice(rootFolder.length + 1) || gitRoot : null
 
-  const untrackedAsChanges = status?.untracked ?? []
-  const unstaged = status?.unstaged ?? []
-  const staged = status?.staged ?? []
+  const untrackedAsChanges = [...(status?.untracked ?? [])].sort((a, b) =>
+    compareGitPaths(a.path, b.path)
+  )
+  const unstaged = [...(status?.unstaged ?? [])].sort((a, b) => compareGitPaths(a.path, b.path))
+  const staged = [...(status?.staged ?? [])].sort((a, b) => compareGitPaths(a.path, b.path))
 
   return (
     <>
       <div className="sidebar-header">
         <span>Source Control</span>
+        {gitRootLabel && (
+          <span style={{ fontSize: 10, color: 'var(--text-muted)', marginLeft: 6 }}>
+            ({gitRootLabel})
+          </span>
+        )}
         <div className="scm-toolbar">
           <button className="scm-icon-btn" title="Pull" onClick={handlePull} disabled={busy}>
-            ⭳
+            ↓
           </button>
           <button className="scm-icon-btn" title="Push" onClick={handlePush} disabled={busy}>
-            ⭱
+            ↑
           </button>
-          <button className="scm-icon-btn" title="Refresh" onClick={refresh}>
+          <button className="scm-icon-btn" title="Refresh" onClick={refresh} disabled={busy}>
             ⟳
           </button>
         </div>
       </div>
-      {gitRootLabel && (
-        <div style={{ padding: '0 12px 4px', fontSize: 10, color: 'var(--text-muted)' }}>
-          Using nested repo: {gitRootLabel}
-        </div>
-      )}
+
       <div style={{ padding: '0 12px 8px' }}>
         <textarea
           placeholder="Commit message"
@@ -499,33 +514,45 @@ export default function SourceControlPanel({
                 <span className="scm-count-badge">{staged.length}</span>
               </div>
             </div>
-            {staged.map((f) => (
-              <div key={f.path} className="tree-item scm-file-row" onClick={() => handleViewDiff(f.path, true)}>
-                <FileTypeBadge fileName={f.path.split(/[/\\]/).pop() ?? f.path} />
-                <span className="scm-file-name">{f.path}</span>
-                <button
-                  className="scm-row-btn"
-                  title="Open file"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onOpenFile(`${gitRoot}/${f.path}`)
-                  }}
+            {staged.map((f) => {
+              const { name, dir } = splitGitPath(f.path)
+              return (
+                <div
+                  key={f.path}
+                  className="tree-item scm-file-row"
+                  onClick={() => onOpenDiffTab(gitRoot, f.path)}
                 >
-                  📄
-                </button>
-                <button
-                  className="scm-row-btn"
-                  title="Unstage"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    handleUnstage(f.path)
-                  }}
-                >
-                  −
-                </button>
-                <span className="scm-status-letter" style={{ color: 'var(--success)' }}>{f.index}</span>
-              </div>
-            ))}
+                  <FileTypeBadge fileName={name} />
+                  <div className="scm-file-info">
+                    <span className="scm-file-name">{name}</span>
+                    {dir && <span className="scm-file-dir">{dir}</span>}
+                  </div>
+                  <button
+                    className="scm-row-btn"
+                    title="Open file"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onOpenFile(`${gitRoot}/${f.path}`)
+                    }}
+                  >
+                    <EyeIcon />
+                  </button>
+                  <button
+                    className="scm-row-btn"
+                    title="Unstage"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      handleUnstage(f.path)
+                    }}
+                  >
+                    −
+                  </button>
+                  <span className="scm-status-letter" style={{ color: getStatusColor(f.index) }}>
+                    {f.index}
+                  </span>
+                </div>
+              )
+            })}
           </>
         )}
 
@@ -543,70 +570,94 @@ export default function SourceControlPanel({
                 <span className="scm-count-badge">{unstaged.length + untrackedAsChanges.length}</span>
               </div>
             </div>
-            {unstaged.map((f) => (
-              <div key={f.path} className="tree-item scm-file-row" onClick={() => handleViewDiff(f.path, false)}>
-                <FileTypeBadge fileName={f.path.split(/[/\\]/).pop() ?? f.path} />
-                <span className="scm-file-name">{f.path}</span>
-                <button
-                  className="scm-row-btn"
-                  title="Open file"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onOpenFile(`${gitRoot}/${f.path}`)
-                  }}
+            {unstaged.map((f) => {
+              const { name, dir } = splitGitPath(f.path)
+              return (
+                <div
+                  key={f.path}
+                  className="tree-item scm-file-row"
+                  onClick={() => onOpenFile(`${gitRoot}/${f.path}`, true)}
                 >
-                  📄
-                </button>
-                <button
-                  className="scm-row-btn"
-                  title="Discard changes"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    handleDiscard(f.path)
-                  }}
+                  <FileTypeBadge fileName={name} />
+                  <div className="scm-file-info">
+                    <span className="scm-file-name">{name}</span>
+                    {dir && <span className="scm-file-dir">{dir}</span>}
+                  </div>
+                  <button
+                    className="scm-row-btn"
+                    title="Open file"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onOpenFile(`${gitRoot}/${f.path}`)
+                    }}
+                  >
+                    <EyeIcon />
+                  </button>
+                  <button
+                    className="scm-row-btn"
+                    title="Discard changes"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      handleDiscard(f.path)
+                    }}
+                  >
+                    ↺
+                  </button>
+                  <button
+                    className="scm-row-btn"
+                    title="Stage"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      handleStage(f.path)
+                    }}
+                  >
+                    +
+                  </button>
+                  <span className="scm-status-letter" style={{ color: getStatusColor(f.workingTree) }}>
+                    {f.workingTree}
+                  </span>
+                </div>
+              )
+            })}
+            {untrackedAsChanges.map((f) => {
+              const { name, dir } = splitGitPath(f.path)
+              return (
+                <div
+                  key={f.path}
+                  className="tree-item scm-file-row"
+                  onClick={() => onOpenFile(`${gitRoot}/${f.path}`, true)}
                 >
-                  ↺
-                </button>
-                <button
-                  className="scm-row-btn"
-                  title="Stage"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    handleStage(f.path)
-                  }}
-                >
-                  +
-                </button>
-                <span className="scm-status-letter" style={{ color: 'var(--accent-bright)' }}>{f.workingTree}</span>
-              </div>
-            ))}
-            {untrackedAsChanges.map((f) => (
-              <div key={f.path} className="tree-item scm-file-row" onClick={() => handleViewUntrackedDiff(f.path)}>
-                <FileTypeBadge fileName={f.path.split(/[/\\]/).pop() ?? f.path} />
-                <span className="scm-file-name">{f.path}</span>
-                <button
-                  className="scm-row-btn"
-                  title="Open file"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    onOpenFile(`${gitRoot}/${f.path}`)
-                  }}
-                >
-                  📄
-                </button>
-                <button
-                  className="scm-row-btn"
-                  title="Stage"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    handleStage(f.path)
-                  }}
-                >
-                  +
-                </button>
-                <span className="scm-status-letter" style={{ color: 'var(--success)' }}>U</span>
-              </div>
-            ))}
+                  <FileTypeBadge fileName={name} />
+                  <div className="scm-file-info">
+                    <span className="scm-file-name">{name}</span>
+                    {dir && <span className="scm-file-dir">{dir}</span>}
+                  </div>
+                  <button
+                    className="scm-row-btn"
+                    title="Open file"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onOpenFile(`${gitRoot}/${f.path}`)
+                    }}
+                  >
+                    <EyeIcon />
+                  </button>
+                  <button
+                    className="scm-row-btn"
+                    title="Stage"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      handleStage(f.path)
+                    }}
+                  >
+                    +
+                  </button>
+                  <span className="scm-status-letter" style={{ color: getStatusColor('U') }}>
+                    U
+                  </span>
+                </div>
+              )
+            })}
           </>
         )}
       </div>

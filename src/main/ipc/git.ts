@@ -246,4 +246,17 @@ export function registerGitHandlers(): void {
       }
     }
   )
+
+  // Fetches a file's raw content at a given ref (e.g. "HEAD:src/foo.ts" or ":src/foo.ts" for the
+  // index/staged blob) — distinct from git:show, which prints a whole commit's diff, not a blob.
+  ipcMain.handle(
+    'git:showFileAtRef',
+    async (_e, root: string, refSpec: string): Promise<string | null> => {
+      try {
+        return await runGit(root, ['show', refSpec])
+      } catch {
+        return null
+      }
+    }
+  )
 }

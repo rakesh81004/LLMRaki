@@ -9,6 +9,7 @@ import { registerTerminalHandlers, killAllTerminals } from './ipc/terminal'
 import { registerGitHandlers } from './ipc/git'
 import { registerSearchHandlers } from './ipc/search'
 import { registerChatHistoryHandlers } from './ipc/chatHistory'
+import { registerFsWatchHandlers } from './ipc/fsWatch'
 import { buildMenu } from './menu'
 import { createWindow } from './window'
 
@@ -28,6 +29,7 @@ app.whenReady().then(() => {
   registerGitHandlers()
   registerSearchHandlers()
   registerChatHistoryHandlers()
+  registerFsWatchHandlers()
   buildMenu()
 
   createWindow()

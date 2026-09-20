@@ -161,7 +161,13 @@ const api = {
     openInDefaultApp: (targetPath: string): Promise<void> =>
       ipcRenderer.invoke('fs:openInDefaultApp', targetPath),
     copy: (sourcePath: string, destDir: string): Promise<string> =>
-      ipcRenderer.invoke('fs:copy', sourcePath, destDir)
+      ipcRenderer.invoke('fs:copy', sourcePath, destDir),
+    watchRoot: (root: string | null): Promise<void> => ipcRenderer.invoke('fs:watchRoot', root),
+    onChanged: (cb: (root: string) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, root: string) => cb(root)
+      ipcRenderer.on('fs:changed', listener)
+      return () => ipcRenderer.removeListener('fs:changed', listener)
+    }
   },
   settings: {
     hasApiKey: (): Promise<boolean> => ipcRenderer.invoke('settings:hasApiKey'),
@@ -292,7 +298,9 @@ const api = {
       ipcRenderer.invoke('git:log', root, limit),
     show: (root: string, hash: string): Promise<string> => ipcRenderer.invoke('git:show', root, hash),
     blameFile: (root: string, filePath: string): Promise<BlameLine[]> =>
-      ipcRenderer.invoke('git:blameFile', root, filePath)
+      ipcRenderer.invoke('git:blameFile', root, filePath),
+    showFileAtRef: (root: string, refSpec: string): Promise<string | null> =>
+      ipcRenderer.invoke('git:showFileAtRef', root, refSpec)
   },
   search: {
     listFiles: (root: string): Promise<string[]> => ipcRenderer.invoke('search:listFiles', root),

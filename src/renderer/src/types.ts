@@ -5,12 +5,23 @@ export interface FileEntry {
 }
 
 export interface OpenTab {
+  // Tab identity — unique per tab. Equals `path` for a plain open, or `${path}::workingtree`
+  // for the diff view, so the same file can be open as two independent, coexisting tabs.
+  id: string
   path: string
   name: string
   content: string
   savedContent: string
   isDirty: boolean
   isUntitled: boolean
+  diffMode?: boolean
+}
+
+export interface DiffTab {
+  id: string
+  gitRoot: string
+  relPath: string
+  name: string
 }
 
 export interface ChatImage {
