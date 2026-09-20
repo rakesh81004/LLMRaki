@@ -90,6 +90,13 @@ export default function EditorArea({
   // baseline before the fetch resolves, flashing the whole file green before correcting itself.
   const [workingBaselineCache, setWorkingBaselineCache] = useState<Record<string, string>>({})
   const [dragTabIndex, setDragTabIndex] = useState<number | null>(null)
+  // `onMount` only fires once per editor instance, so a callback registered inside it
+  // (Cmd+S, content-change) would otherwise close over whichever `onSave`/`onChange` prop
+  // existed at that first render — stale forever after, since App re-creates those functions
+  // on every render. Route through a ref that's refreshed every render instead, so the
+  // save command always calls the version that reads the *current* tab content.
+  const latestCallbacksRef = useRef({ onSave, onChange })
+  latestCallbacksRef.current = { onSave, onChange }
   const tabNodesRef = useRef<Map<string, HTMLDivElement>>(new Map())
 
   function registerTabNode(key: string, node: HTMLDivElement | null): void {
@@ -287,14 +294,16 @@ export default function EditorArea({
   ): void {
     editorRef.current = editorInstance
     monacoRef.current = monaco
-    editorInstance.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => onSave(tabId))
+    editorInstance.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () =>
+      latestCallbacksRef.current.onSave(tabId)
+    )
     editorInstance.onDidChangeCursorPosition((e) => {
       onCursorChange(e.position.lineNumber, e.position.column)
       updateBlameDecoration(e.position.lineNumber)
       computeSymbolPath(e.position.lineNumber, e.position.column)
     })
     editorInstance.onDidChangeModelContent(() => {
-      onChange(tabId, editorInstance.getValue())
+      latestCallbacksRef.current.onChange(tabId, editorInstance.getValue())
       if (symbolDebounceRef.current) clearTimeout(symbolDebounceRef.current)
       symbolDebounceRef.current = setTimeout(() => {
         const pos = editorInstance.getPosition()
