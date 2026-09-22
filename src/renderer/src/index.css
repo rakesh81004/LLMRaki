@@ -695,7 +695,8 @@ textarea:focus {
 }
 
 .blame-inline-decoration {
-  color: rgba(255, 255, 255, 0.32);
+  color: #ffffff;
+  opacity: 0.5;
   font-style: italic;
 }
 
@@ -2080,6 +2081,15 @@ textarea:focus {
   display: flex;
   align-items: center;
   gap: 4px;
+}
+
+/* The base .welcome-link rule expands its hover hit-area symmetrically (10px each side) for
+   standalone tiles with nothing after them — but here it has siblings (timestamp, remove
+   button) in the same row, so the right-side expansion would paint its hover background on
+   top of them. Only expand to the left, where there's nothing to overlap. */
+.welcome-recent-item .welcome-link {
+  width: calc(100% + 10px);
+  margin: 0 0 0 -10px;
 }
 
 .welcome-recent-item .close-btn {

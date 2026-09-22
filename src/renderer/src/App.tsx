@@ -16,6 +16,7 @@ import CommandPalette, { Command } from './components/CommandPalette'
 import ContextMenu, { ContextMenuEntry } from './components/ContextMenu'
 import InputModal from './components/InputModal'
 import { languageForFile } from './utils/language'
+import { loadProjectContext } from './projectIntelliSense'
 import { SidebarView, FileEntry, OpenTab, DiffTab, GitStatus, RecentFolder, WELCOME_TAB_ID } from './types'
 import appLogo from './assets/app-logo.png'
 
@@ -185,6 +186,13 @@ export default function App(): JSX.Element {
 
   useEffect(() => {
     window.api.fs.watchRoot(rootFolder)
+  }, [rootFolder])
+
+  // Gives Monaco's TypeScript worker real project context (tsconfig, cross-file imports,
+  // dependency types) — without this, autocomplete only ever sees whichever single file is
+  // open. See projectIntelliSense.ts for why this doesn't tear anything down on folder switch.
+  useEffect(() => {
+    loadProjectContext(rootFolder)
   }, [rootFolder])
 
   const refreshWorkspaceRef = useRef(refreshWorkspaceAfterTerminal)

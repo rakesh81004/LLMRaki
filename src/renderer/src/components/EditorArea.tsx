@@ -150,11 +150,14 @@ export default function EditorArea({
   }, [activeDiffTab?.id])
 
   useEffect(() => {
-    if (!rootFolder) {
-      gitRootRef.current = null
-      setGitAvailable(false)
-      return
-    }
+    // Reset synchronously as soon as `rootFolder` changes (not just once the async resolution
+    // below finishes) — otherwise a project switch leaves gitRootRef pointing at the *previous*
+    // project's git root for that brief window, and other effects that opportunistically reuse
+    // it (blame, diff baseline) via `gitRootRef.current ?? ...` would silently run git commands
+    // against the wrong repo instead of falling back to resolving it themselves.
+    gitRootRef.current = null
+    setGitAvailable(false)
+    if (!rootFolder) return
     let cancelled = false
     window.api.git.findRoot(rootFolder).then((found) => {
       if (cancelled) return
@@ -204,6 +207,9 @@ export default function EditorArea({
       {
         range: new monaco.Range(lineNumber, endColumn, lineNumber, endColumn),
         options: {
+          // The range is a zero-width point at end-of-line, i.e. always "collapsed" — Monaco
+          // silently skips rendering a decoration whose range is collapsed unless told not to.
+          showIfCollapsed: true,
           after: {
             content: '   ' + blameLabel(blameLine),
             inlineClassName: 'blame-inline-decoration',
@@ -309,6 +315,13 @@ export default function EditorArea({
         const pos = editorInstance.getPosition()
         if (pos) computeSymbolPath(pos.lineNumber, pos.column)
       }, 400)
+    })
+    // A decoration applied before Monaco's first real layout pass (e.g. right at mount, while
+    // automaticLayout is still catching up to the container's true size) can silently fail to
+    // paint even once the editor resizes — re-apply once layout actually settles.
+    editorInstance.onDidLayoutChange(() => {
+      const pos = editorInstance.getPosition()
+      if (pos) updateBlameDecoration(pos.lineNumber)
     })
     if (revealLine !== null) {
       revealLineNow(editorInstance, revealLine)
@@ -473,6 +486,7 @@ export default function EditorArea({
             modified={activeTab.content}
             originalModelPath={`diff-baseline://${activeTab.path}`}
             modifiedModelPath={activeTab.path}
+            keepCurrentModifiedModel
             theme="llmraki-dark"
             onMount={(diffEditorInstance, monaco) => {
               wireModifiedEditor(activeTab.id, diffEditorInstance.getModifiedEditor(), monaco)
@@ -490,6 +504,7 @@ export default function EditorArea({
         <Editor
           key={activeTab.id}
           path={activeTab.path}
+          keepCurrentModel
           language={languageForFile(activeTab.name)}
           value={activeTab.content}
           theme="llmraki-dark"
