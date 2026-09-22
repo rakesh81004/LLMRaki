@@ -40,7 +40,7 @@ export default function WelcomeView({
         <div className="welcome-hero-overlay" />
         <div className="welcome-header">
           <h1>LLMRaki</h1>
-          <div className="welcome-tagline">A VS Code-style editor with a built-in AI assistant</div>
+          <div className="welcome-tagline">A desktop code editor with a built-in AI assistant</div>
         </div>
       </div>
 

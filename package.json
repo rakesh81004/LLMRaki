@@ -1,7 +1,7 @@
 {
   "name": "llmraki",
   "version": "0.1.0",
-  "description": "A VS Code-style desktop code editor with a built-in AI assistant",
+  "description": "A desktop code editor with a built-in AI assistant",
   "main": "./out/main/index.js",
   "author": "Rakesh SP",
   "private": true,
@@ -21,6 +21,7 @@
     "electron-updater": "^6.3.9",
     "monaco-editor": "^0.52.2",
     "node-pty": "^1.1.0",
+    "prettier": "^3.9.8",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^10.1.0",

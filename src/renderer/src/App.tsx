@@ -17,6 +17,7 @@ import ContextMenu, { ContextMenuEntry } from './components/ContextMenu'
 import InputModal from './components/InputModal'
 import { languageForFile } from './utils/language'
 import { loadProjectContext } from './projectIntelliSense'
+import { setDefinitionOpenHandler } from './monacoEditorOpener'
 import { SidebarView, FileEntry, OpenTab, DiffTab, GitStatus, RecentFolder, WELCOME_TAB_ID } from './types'
 import appLogo from './assets/app-logo.png'
 
@@ -27,6 +28,10 @@ const COMMANDS: Command[] = [
   { id: 'save-file', label: 'File: Save' },
   { id: 'save-file-as', label: 'File: Save As…' },
   { id: 'close-tab', label: 'File: Close Editor' },
+  { id: 'format-document', label: 'Format Document' },
+  { id: 'goto-definition', label: 'Go to Definition' },
+  { id: 'find-references', label: 'Find All References' },
+  { id: 'ai-edit-selection', label: 'AI: Edit Selection (⌘K)' },
   { id: 'view-explorer', label: 'View: Show Explorer' },
   { id: 'open-search', label: 'View: Show Search' },
   { id: 'view-source-control', label: 'View: Show Source Control' },
@@ -143,6 +148,10 @@ export default function App(): JSX.Element {
   const [panelMaximized, setPanelMaximized] = useState(false)
   const [bottomPanelTab, setBottomPanelTab] = useState<'problems' | 'output' | 'debug' | 'terminal' | 'ports'>('terminal')
   const [newTerminalSignal, setNewTerminalSignal] = useState(0)
+  const [editorActionSignal, setEditorActionSignal] = useState<{
+    type: 'format' | 'goto-definition' | 'find-references' | 'inline-edit'
+    token: number
+  } | null>(null)
   const [openTerminalAt, setOpenTerminalAt] = useState<string | null>(null)
   const [runCommand, setRunCommand] = useState<string | null>(null)
 
@@ -170,6 +179,13 @@ export default function App(): JSX.Element {
   const [chatIncludeSignal, setChatIncludeSignal] = useState(0)
 
   const activeTab = tabs.find((t) => t.id === activePath) ?? null
+
+  // Reassigned every render (not registered once in an effect) so it always closes over the
+  // current `openFileByPath` — standalone Monaco's "Go to Definition" has no built-in notion of
+  // switching files, so this is what makes jumping to a definition in a different file work.
+  setDefinitionOpenHandler((path, line) => {
+    openFileByPath(path, line)
+  })
 
   function refreshRecents(): void {
     window.api.settings.getRecentFolders().then(setRecentFolders)
@@ -586,28 +602,32 @@ export default function App(): JSX.Element {
     )
   }
 
-  async function handleSave(id: string, forceSaveAs = false): Promise<void> {
+  // `explicitContent` lets a caller that just formatted the buffer (see EditorArea's
+  // format-on-save) pass the freshly-formatted text directly, instead of relying on React state
+  // that may not have caught up to the format edit yet by the time this runs.
+  async function handleSave(id: string, forceSaveAs = false, explicitContent?: string): Promise<void> {
     const tab = tabs.find((t) => t.id === id)
     if (!tab) return
+    const content = explicitContent ?? tab.content
 
     if (tab.isUntitled || forceSaveAs) {
       const target = await window.api.fs.showSaveDialog(tab.isUntitled ? tab.name : tab.path)
       if (!target) return
-      await window.api.fs.writeFile(target, tab.content)
+      await window.api.fs.writeFile(target, content)
       const name = target.split(/[/\\]/).pop() ?? target
       const newId = tabIdFor(target, tab.diffMode)
       setTabs((prev) =>
         prev.map((t) =>
           t.id === id
-            ? { ...t, id: newId, path: target, name, savedContent: t.content, isDirty: false, isUntitled: false }
+            ? { ...t, id: newId, path: target, name, content, savedContent: content, isDirty: false, isUntitled: false }
             : t
         )
       )
       if (activePath === id) setActivePath(newId)
     } else {
-      await window.api.fs.writeFile(tab.path, tab.content)
+      await window.api.fs.writeFile(tab.path, content)
       setTabs((prev) =>
-        prev.map((t) => (t.id === id ? { ...t, savedContent: t.content, isDirty: false } : t))
+        prev.map((t) => (t.id === id ? { ...t, content, savedContent: content, isDirty: false } : t))
       )
     }
     setGitRefreshToken((t) => t + 1)
@@ -692,6 +712,18 @@ export default function App(): JSX.Element {
       case 'close-tab':
         if (activePath) handleCloseTab(activePath)
         break
+      case 'format-document':
+        setEditorActionSignal({ type: 'format', token: Date.now() })
+        break
+      case 'goto-definition':
+        setEditorActionSignal({ type: 'goto-definition', token: Date.now() })
+        break
+      case 'find-references':
+        setEditorActionSignal({ type: 'find-references', token: Date.now() })
+        break
+      case 'ai-edit-selection':
+        setEditorActionSignal({ type: 'inline-edit', token: Date.now() })
+        break
       case 'open-search':
         setSidebarView('search')
         break
@@ -728,7 +760,7 @@ export default function App(): JSX.Element {
         setNewTerminalSignal((c) => c + 1)
         break
       case 'about':
-        window.alert('LLMRaki 0.1.0\nA VS Code-style editor with a built-in AI assistant.')
+        window.alert('LLMRaki 0.1.0\nA desktop code editor with a built-in AI assistant.')
         break
       case 'show-welcome':
         setShowWelcomeTab(true)
@@ -854,6 +886,7 @@ export default function App(): JSX.Element {
               onCursorChange={(line, column) => setCursor({ line, column })}
               onRevealed={() => setRevealTarget(null)}
               onOpenFile={(filePath) => openFileByPath(filePath)}
+              editorActionSignal={editorActionSignal}
               welcomeProps={{
                 recentFolders,
                 onNewFile: handleNewFile,

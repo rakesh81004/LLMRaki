@@ -5,6 +5,7 @@ import { registerSettingsHandlers } from './ipc/settings'
 import { registerAiHandlers } from './ipc/openai'
 import { registerOllamaHandlers } from './ipc/ollama'
 import { registerGeminiHandlers } from './ipc/gemini'
+import { registerInlineAiHandlers } from './ipc/inlineAi'
 import { registerTerminalHandlers, killAllTerminals } from './ipc/terminal'
 import { registerGitHandlers } from './ipc/git'
 import { registerSearchHandlers } from './ipc/search'
@@ -25,6 +26,7 @@ app.whenReady().then(() => {
   registerAiHandlers()
   registerOllamaHandlers()
   registerGeminiHandlers()
+  registerInlineAiHandlers()
   registerTerminalHandlers()
   registerGitHandlers()
   registerSearchHandlers()

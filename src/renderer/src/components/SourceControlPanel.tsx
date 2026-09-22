@@ -14,10 +14,10 @@ interface Props {
   refreshToken: number
 }
 
-// Matches VS Code's Source Control ordering: a file directly in a directory is listed before
-// any path that continues into a subdirectory at that same point (files-before-folders, applied
-// level by level), falling back to plain alphabetical comparison within the same group — not the
-// flat lexicographic order `git status --porcelain` returns paths in, which interleaves them.
+// Files-before-folders ordering: a file directly in a directory is listed before any path that
+// continues into a subdirectory at that same point (applied level by level), falling back to
+// plain alphabetical comparison within the same group — not the flat lexicographic order
+// `git status --porcelain` returns paths in, which interleaves them.
 function compareGitPaths(a: string, b: string): number {
   const aParts = a.split('/')
   const bParts = b.split('/')

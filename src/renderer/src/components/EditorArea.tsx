@@ -3,6 +3,8 @@ import Editor, { DiffEditor } from '@monaco-editor/react'
 import type { editor } from 'monaco-editor'
 import { BlameLine, DiffTab, OpenTab, RecentFolder, WELCOME_TAB_ID } from '../types'
 import { languageForFile } from '../utils/language'
+import { canFormat, formatCode } from '../formatting'
+import { openInlineEditWidget } from '../inlineEditWidget'
 import { CloseIcon, LockIcon } from './Icons'
 import FileTypeBadge from './FileTypeBadge'
 import WelcomeView from './WelcomeView'
@@ -40,10 +42,14 @@ interface Props {
   onCloseDiffTab: (id: string) => void
   onReorderTabs: (fromIndex: number, toIndex: number) => void
   onChange: (path: string, content: string) => void
-  onSave: (path: string) => void
+  onSave: (path: string, forceSaveAs?: boolean, explicitContent?: string) => void
   onCursorChange: (line: number, column: number) => void
   onRevealed: () => void
   onOpenFile: (path: string) => void
+  editorActionSignal: {
+    type: 'format' | 'goto-definition' | 'find-references' | 'inline-edit'
+    token: number
+  } | null
   welcomeProps: {
     recentFolders: RecentFolder[]
     onNewFile: () => void
@@ -69,6 +75,7 @@ export default function EditorArea({
   onCursorChange,
   onRevealed,
   onOpenFile,
+  editorActionSignal,
   welcomeProps
 }: Props): JSX.Element {
   const activeTab = tabs.find((t) => t.id === activePath) ?? null
@@ -244,6 +251,28 @@ export default function EditorArea({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab?.path, rootFolder])
 
+  // Command Palette actions ("Format Document", "Go to Definition", "Find All References") are
+  // dispatched from App.tsx as a token-stamped signal (rather than a direct function call) since
+  // this component doesn't own the palette; the token lets the same type fire again consecutively.
+  useEffect(() => {
+    if (!editorActionSignal) return
+    const editorInstance = editorRef.current
+    if (!editorInstance) return
+    if (editorActionSignal.type === 'format') {
+      if (activeTab) void tryFormatDocument(editorInstance, activeTab.id)
+    } else if (editorActionSignal.type === 'goto-definition') {
+      editorInstance.focus()
+      void editorInstance.getAction('editor.action.revealDefinition')?.run()
+    } else if (editorActionSignal.type === 'find-references') {
+      editorInstance.focus()
+      void editorInstance.getAction('editor.action.goToReferences')?.run()
+    } else if (editorActionSignal.type === 'inline-edit') {
+      const monaco = monacoRef.current
+      if (monaco) openInlineEdit(editorInstance, monaco)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editorActionSignal])
+
   async function computeSymbolPath(lineNumber: number, column: number): Promise<void> {
     const monaco = monacoRef.current
     const editorInstance = editorRef.current
@@ -293,6 +322,82 @@ export default function EditorArea({
     editorInstance.focus()
   }
 
+  // Reformats the whole buffer in place via real Prettier, as a single undoable edit, and keeps
+  // React state in sync immediately (rather than waiting on the onDidChangeModelContent round
+  // trip) so a caller that needs the freshly-formatted text — format-on-save — can use it right
+  // away instead of racing React's state batching.
+  async function tryFormatDocument(
+    editorInstance: editor.IStandaloneCodeEditor,
+    tabId: string
+  ): Promise<string | null> {
+    const model = editorInstance.getModel()
+    if (!model) return null
+    const fileName = model.uri.path.split('/').pop() ?? ''
+    if (!canFormat(fileName)) return null
+    const original = editorInstance.getValue()
+    const formatted = await formatCode(fileName, original)
+    if (formatted === null) return null
+    if (formatted !== original) {
+      editorInstance.executeEdits('format', [{ range: model.getFullModelRange(), text: formatted }])
+      latestCallbacksRef.current.onChange(tabId, formatted)
+    }
+    return formatted
+  }
+
+  function flashRange(
+    editorInstance: editor.IStandaloneCodeEditor,
+    monaco: typeof import('monaco-editor'),
+    startLine: number,
+    endLine: number
+  ): void {
+    const ids = editorInstance.deltaDecorations(
+      [],
+      [
+        {
+          range: new monaco.Range(startLine, 1, endLine, 1),
+          options: { isWholeLine: true, className: 'inline-ai-edit-flash' }
+        }
+      ]
+    )
+    setTimeout(() => {
+      editorInstance.deltaDecorations(ids, [])
+    }, 1200)
+  }
+
+  // Cmd+K: edit the selection (or the current line, if nothing is selected) in place via a
+  // floating instruction box, rather than routing the change through the side chat panel.
+  function openInlineEdit(
+    editorInstance: editor.IStandaloneCodeEditor,
+    monaco: typeof import('monaco-editor')
+  ): void {
+    const model = editorInstance.getModel()
+    if (!model) return
+    const selection = editorInstance.getSelection()
+    const currentLine = editorInstance.getPosition()?.lineNumber ?? 1
+    const range =
+      selection && !selection.isEmpty()
+        ? selection
+        : new monaco.Range(currentLine, 1, currentLine, model.getLineMaxColumn(currentLine))
+    const originalCode = model.getValueInRange(range)
+    const fileName = model.uri.path.split('/').pop() ?? ''
+    const language = model.getLanguageId()
+
+    openInlineEditWidget(editorInstance, monaco, {
+      anchorLine: range.startLineNumber,
+      onSubmit: async (instruction) => {
+        const result = await window.api.inlineAi.edit({
+          code: originalCode,
+          instruction,
+          language,
+          fileName
+        })
+        editorInstance.executeEdits('inline-ai-edit', [{ range, text: result }])
+        const endLine = range.startLineNumber + Math.max(0, result.split('\n').length - 1)
+        flashRange(editorInstance, monaco, range.startLineNumber, endLine)
+      }
+    })
+  }
+
   function wireModifiedEditor(
     tabId: string,
     editorInstance: editor.IStandaloneCodeEditor,
@@ -300,8 +405,12 @@ export default function EditorArea({
   ): void {
     editorRef.current = editorInstance
     monacoRef.current = monaco
-    editorInstance.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () =>
-      latestCallbacksRef.current.onSave(tabId)
+    editorInstance.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, async () => {
+      const formatted = await tryFormatDocument(editorInstance, tabId)
+      latestCallbacksRef.current.onSave(tabId, false, formatted ?? undefined)
+    })
+    editorInstance.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK, () =>
+      openInlineEdit(editorInstance, monaco)
     )
     editorInstance.onDidChangeCursorPosition((e) => {
       onCursorChange(e.position.lineNumber, e.position.column)

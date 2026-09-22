@@ -260,6 +260,16 @@ const api = {
     respondPermission: (permissionId: string, allowed: boolean): Promise<void> =>
       ipcRenderer.invoke('agent:respondPermission', permissionId, allowed)
   },
+  inlineAi: {
+    complete: (payload: { prefix: string; suffix: string; language: string }): Promise<string | null> =>
+      ipcRenderer.invoke('inlineai:complete', payload),
+    edit: (payload: {
+      code: string
+      instruction: string
+      language: string
+      fileName: string
+    }): Promise<string> => ipcRenderer.invoke('inlineai:edit', payload)
+  },
   ollama: {
     sendMessage: (requestId: string, model: string, messages: ChatMessage[]): Promise<void> =>
       ipcRenderer.invoke('ollama:sendMessage', requestId, model, messages),

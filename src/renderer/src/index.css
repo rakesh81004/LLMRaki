@@ -700,6 +700,46 @@ textarea:focus {
   font-style: italic;
 }
 
+.inline-ai-edit-widget {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--bg-input);
+  border: 1px solid rgba(var(--glow-rgb), 0.5);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  min-width: 320px;
+}
+.inline-ai-edit-widget.generating {
+  border-color: rgba(var(--glow-rgb), 0.85);
+}
+.inline-ai-edit-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: inherit;
+}
+.inline-ai-edit-input:disabled {
+  opacity: 0.6;
+}
+.inline-ai-edit-status {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.inline-ai-edit-status.error {
+  color: #f28b82;
+}
+.inline-ai-edit-flash {
+  background: rgba(var(--glow-rgb), 0.22);
+  transition: background 1s ease-out;
+}
+
 .editor-empty {
   flex: 1;
   display: flex;

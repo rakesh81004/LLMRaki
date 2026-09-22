@@ -193,3 +193,13 @@ export async function getGeminiModel(): Promise<string> {
   const settings = await readSettings()
   return settings.geminiModel ?? 'gemini-3.6-flash'
 }
+
+export async function getProvider(): Promise<Provider> {
+  const settings = await readSettings()
+  return settings.provider ?? 'ollama'
+}
+
+export async function getOllamaModel(): Promise<string> {
+  const settings = await readSettings()
+  return settings.ollamaModel ?? 'llama3.2'
+}

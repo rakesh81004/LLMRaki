@@ -1,6 +1,6 @@
 # LLMRaki
 
-A VS Code-style desktop code editor with a built-in AI chat assistant, built with Electron + React + Monaco. Runs on macOS and Windows from the same codebase.
+A desktop code editor with a built-in AI chat assistant, built with Electron + React + Monaco. Runs on macOS and Windows from the same codebase.
 
 ## Features
 
