@@ -50,6 +50,9 @@ interface Props {
     type: 'format' | 'goto-definition' | 'find-references' | 'inline-edit'
     token: number
   } | null
+  breakpoints: Record<string, number[]>
+  onToggleBreakpoint: (path: string, line: number) => void
+  pausedLocation: { path: string; line: number } | null
   welcomeProps: {
     recentFolders: RecentFolder[]
     onNewFile: () => void
@@ -76,6 +79,9 @@ export default function EditorArea({
   onRevealed,
   onOpenFile,
   editorActionSignal,
+  breakpoints,
+  onToggleBreakpoint,
+  pausedLocation,
   welcomeProps
 }: Props): JSX.Element {
   const activeTab = tabs.find((t) => t.id === activePath) ?? null
@@ -102,8 +108,20 @@ export default function EditorArea({
   // existed at that first render — stale forever after, since App re-creates those functions
   // on every render. Route through a ref that's refreshed every render instead, so the
   // save command always calls the version that reads the *current* tab content.
-  const latestCallbacksRef = useRef({ onSave, onChange })
-  latestCallbacksRef.current = { onSave, onChange }
+  const latestCallbacksRef = useRef({ onSave, onChange, onToggleBreakpoint })
+  latestCallbacksRef.current = { onSave, onChange, onToggleBreakpoint }
+  const breakpointDecorationIds = useRef<string[]>([])
+  const pausedLineDecorationIds = useRef<string[]>([])
+  // Same staleness hazard as latestCallbacksRef above, but for onDidLayoutChange (registered once
+  // in wireModifiedEditor): calling updateBreakpointDecorations()/updatePausedLineDecoration()
+  // directly from that one-time listener would replay whatever breakpoints/pausedLocation existed
+  // at mount forever after — including an empty breakpoints map, which silently wiped real
+  // breakpoint dots the first time anything (e.g. the bottom panel opening) changed the layout.
+  const latestDecorationUpdatersRef = useRef({
+    updateBreakpointDecorations: () => {},
+    updatePausedLineDecoration: () => {}
+  })
+  latestDecorationUpdatersRef.current = { updateBreakpointDecorations, updatePausedLineDecoration }
   const tabNodesRef = useRef<Map<string, HTMLDivElement>>(new Map())
 
   function registerTabNode(key: string, node: HTMLDivElement | null): void {
@@ -273,6 +291,61 @@ export default function EditorArea({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editorActionSignal])
 
+  // Breakpoint dots in the glyph margin, kept in sync with the shared breakpoints map.
+  //
+  // deltaDecorations() alone genuinely registers the decoration on the model (confirmed via
+  // getLineDecorations() — the glyphMarginClassName is there) but Monaco doesn't always schedule
+  // a repaint for a decoration change that originates outside its own input/scroll event loop —
+  // here, from a React state update reacting to an IPC event, not a DOM event Monaco itself
+  // observed. An explicit render(true) is what actually gets it painted.
+  function updateBreakpointDecorations(): void {
+    const editorInstance = editorRef.current
+    const monaco = monacoRef.current
+    if (!editorInstance || !monaco || !activeTab) return
+    const lines = breakpoints[activeTab.path] ?? []
+    breakpointDecorationIds.current = editorInstance.deltaDecorations(
+      breakpointDecorationIds.current,
+      lines.map((line) => ({
+        range: new monaco.Range(line, 1, line, 1),
+        options: { isWholeLine: false, glyphMarginClassName: 'breakpoint-glyph', showIfCollapsed: true }
+      }))
+    )
+    editorInstance.render(true)
+  }
+
+  // Highlights the line execution is currently paused on, when the active tab is the file the
+  // paused call frame belongs to.
+  function updatePausedLineDecoration(): void {
+    const editorInstance = editorRef.current
+    const monaco = monacoRef.current
+    if (!editorInstance || !monaco || !activeTab) return
+    const shouldHighlight = pausedLocation && pausedLocation.path === activeTab.path
+    pausedLineDecorationIds.current = editorInstance.deltaDecorations(
+      pausedLineDecorationIds.current,
+      shouldHighlight
+        ? [
+            {
+              range: new monaco.Range(pausedLocation.line, 1, pausedLocation.line, 1),
+              options: {
+                isWholeLine: true,
+                className: 'debug-current-line',
+                glyphMarginClassName: 'debug-current-line-glyph',
+                showIfCollapsed: true
+              }
+            }
+          ]
+        : []
+    )
+    editorInstance.render(true)
+    if (shouldHighlight) revealLineNow(editorInstance, pausedLocation.line)
+  }
+
+  // These effects (rather than only the one-time setup in wireModifiedEditor) are what let
+  // toggling a breakpoint or stepping the debugger repaint the currently visible editor without
+  // needing to remount it.
+  useEffect(updateBreakpointDecorations, [activeTab?.path, breakpoints])
+  useEffect(updatePausedLineDecoration, [activeTab?.path, pausedLocation])
+
   async function computeSymbolPath(lineNumber: number, column: number): Promise<void> {
     const monaco = monacoRef.current
     const editorInstance = editorRef.current
@@ -412,6 +485,16 @@ export default function EditorArea({
     editorInstance.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK, () =>
       openInlineEdit(editorInstance, monaco)
     )
+    editorInstance.onMouseDown((e) => {
+      const isGutterClick =
+        e.target.type === monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN ||
+        e.target.type === monaco.editor.MouseTargetType.GUTTER_LINE_NUMBERS
+      const line = e.target.position?.lineNumber
+      const path = editorInstance.getModel()?.uri.path
+      if (isGutterClick && line && path) {
+        latestCallbacksRef.current.onToggleBreakpoint(path, line)
+      }
+    })
     editorInstance.onDidChangeCursorPosition((e) => {
       onCursorChange(e.position.lineNumber, e.position.column)
       updateBlameDecoration(e.position.lineNumber)
@@ -431,7 +514,11 @@ export default function EditorArea({
     editorInstance.onDidLayoutChange(() => {
       const pos = editorInstance.getPosition()
       if (pos) updateBlameDecoration(pos.lineNumber)
+      latestDecorationUpdatersRef.current.updateBreakpointDecorations()
+      latestDecorationUpdatersRef.current.updatePausedLineDecoration()
     })
+    updateBreakpointDecorations()
+    updatePausedLineDecoration()
     if (revealLine !== null) {
       revealLineNow(editorInstance, revealLine)
       onRevealed()
@@ -623,7 +710,8 @@ export default function EditorArea({
             fontSize: 13,
             minimap: { enabled: true },
             automaticLayout: true,
-            scrollBeyondLastLine: false
+            scrollBeyondLastLine: false,
+            glyphMargin: true
           }}
         />
       )}

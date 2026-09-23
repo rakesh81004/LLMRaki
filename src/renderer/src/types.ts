@@ -111,3 +111,39 @@ export interface CommandAutoRunEvent {
   output: string
   error: boolean
 }
+
+export interface DebugScope {
+  type: string
+  name?: string
+  objectId?: string
+}
+
+export interface DebugCallFrame {
+  callFrameId: string
+  functionName: string
+  path: string
+  line: number
+  column: number
+  scopes: DebugScope[]
+}
+
+export interface DebugOutputEvent {
+  stream: 'stdout' | 'stderr' | 'console'
+  text: string
+}
+
+export interface DebugVariable {
+  name: string
+  // Accessor properties (getter/setter only, no plain value) come back from the inspector
+  // protocol without a `value` at all — only `get`/`set` remote-object descriptors, which aren't
+  // useful to show without invoking the getter, so this is genuinely optional, not just typed
+  // loosely.
+  value?: {
+    type: string
+    subtype?: string
+    className?: string
+    value?: unknown
+    description?: string
+    objectId?: string
+  }
+}

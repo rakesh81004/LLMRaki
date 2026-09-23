@@ -18,6 +18,7 @@ import InputModal from './components/InputModal'
 import { languageForFile } from './utils/language'
 import { loadProjectContext } from './projectIntelliSense'
 import { setDefinitionOpenHandler } from './monacoEditorOpener'
+import { useDebuggerSession } from './useDebugger'
 import { SidebarView, FileEntry, OpenTab, DiffTab, GitStatus, RecentFolder, WELCOME_TAB_ID } from './types'
 import appLogo from './assets/app-logo.png'
 
@@ -154,6 +155,7 @@ export default function App(): JSX.Element {
   } | null>(null)
   const [openTerminalAt, setOpenTerminalAt] = useState<string | null>(null)
   const [runCommand, setRunCommand] = useState<string | null>(null)
+  const debuggerSession = useDebuggerSession()
 
   const [quickOpenVisible, setQuickOpenVisible] = useState(false)
   const [commandPaletteVisible, setCommandPaletteVisible] = useState(false)
@@ -846,10 +848,27 @@ export default function App(): JSX.Element {
           <div className="sidebar" style={{ width: sidebarWidth }}>
             <RunPanel
               activeFileName={activeTab?.name ?? null}
+              activeFilePath={activeTab?.path ?? null}
               onRun={(command) => {
                 setBottomPanelVisible(true)
                 setRunCommand(command)
               }}
+              debugState={debuggerSession.state}
+              breakpoints={debuggerSession.breakpoints}
+              onStartDebugging={(path) => {
+                setBottomPanelVisible(true)
+                setBottomPanelTab('debug')
+                debuggerSession.start(path)
+              }}
+              onStop={debuggerSession.stop}
+              onContinue={debuggerSession.continue_}
+              onStepOver={debuggerSession.stepOver}
+              onStepInto={debuggerSession.stepInto}
+              onStepOut={debuggerSession.stepOut}
+              onSelectFrame={debuggerSession.setActiveFrameIndex}
+              onOpenFile={(filePath, line) => openFileByPath(filePath, line)}
+              onToggleBreakpoint={debuggerSession.toggleBreakpoint}
+              getVariables={debuggerSession.getProperties}
             />
           </div>
         )}
@@ -887,6 +906,9 @@ export default function App(): JSX.Element {
               onRevealed={() => setRevealTarget(null)}
               onOpenFile={(filePath) => openFileByPath(filePath)}
               editorActionSignal={editorActionSignal}
+              breakpoints={debuggerSession.breakpoints}
+              onToggleBreakpoint={debuggerSession.toggleBreakpoint}
+              pausedLocation={debuggerSession.pausedLocation}
               welcomeProps={{
                 recentFolders,
                 onNewFile: handleNewFile,
@@ -931,6 +953,9 @@ export default function App(): JSX.Element {
                 onOpenTerminalAtConsumed={() => setOpenTerminalAt(null)}
                 runCommand={runCommand}
                 onRunConsumed={() => setRunCommand(null)}
+                debugOutput={debuggerSession.state.output}
+                debugPaused={debuggerSession.state.status === 'paused'}
+                onDebugEvaluate={debuggerSession.evaluate}
                 maximized={panelMaximized}
                 onToggleMaximize={() => setPanelMaximized((v) => !v)}
                 onClose={() => {

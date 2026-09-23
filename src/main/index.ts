@@ -6,6 +6,7 @@ import { registerAiHandlers } from './ipc/openai'
 import { registerOllamaHandlers } from './ipc/ollama'
 import { registerGeminiHandlers } from './ipc/gemini'
 import { registerInlineAiHandlers } from './ipc/inlineAi'
+import { registerNodeDebuggerHandlers, killAllDebugSessions } from './ipc/nodeDebugger'
 import { registerTerminalHandlers, killAllTerminals } from './ipc/terminal'
 import { registerGitHandlers } from './ipc/git'
 import { registerSearchHandlers } from './ipc/search'
@@ -27,6 +28,7 @@ app.whenReady().then(() => {
   registerOllamaHandlers()
   registerGeminiHandlers()
   registerInlineAiHandlers()
+  registerNodeDebuggerHandlers()
   registerTerminalHandlers()
   registerGitHandlers()
   registerSearchHandlers()
@@ -43,6 +45,7 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   killAllTerminals()
+  killAllDebugSessions()
   if (process.platform !== 'darwin') {
     app.quit()
   }
@@ -50,4 +53,5 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   killAllTerminals()
+  killAllDebugSessions()
 })

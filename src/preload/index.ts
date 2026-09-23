@@ -111,6 +111,48 @@ export interface GeminiAvailability {
 
 export type AgentMode = 'ask' | 'edit' | 'auto'
 
+export interface BreakpointGroup {
+  path: string
+  lines: number[]
+}
+
+export interface DebugScope {
+  type: string
+  name?: string
+  objectId?: string
+}
+
+export interface DebugCallFrame {
+  callFrameId: string
+  functionName: string
+  path: string
+  line: number
+  column: number
+  scopes: DebugScope[]
+}
+
+export interface DebugPausedEvent {
+  callFrames: DebugCallFrame[]
+  reason: string
+}
+
+export interface DebugOutputEvent {
+  stream: 'stdout' | 'stderr' | 'console'
+  text: string
+}
+
+export interface DebugVariable {
+  name: string
+  value: {
+    type: string
+    subtype?: string
+    className?: string
+    value?: unknown
+    description?: string
+    objectId?: string
+  }
+}
+
 export interface FileEditEvent {
   path: string
   relativePath: string
@@ -269,6 +311,54 @@ const api = {
       language: string
       fileName: string
     }): Promise<string> => ipcRenderer.invoke('inlineai:edit', payload)
+  },
+  debug: {
+    start: (sessionId: string, entryPath: string, breakpoints: BreakpointGroup[]): Promise<void> =>
+      ipcRenderer.invoke('debug:start', sessionId, entryPath, breakpoints),
+    setBreakpoint: (sessionId: string, filePath: string, line: number): Promise<void> =>
+      ipcRenderer.invoke('debug:setBreakpoint', sessionId, filePath, line),
+    removeBreakpoint: (sessionId: string, filePath: string, line: number): Promise<void> =>
+      ipcRenderer.invoke('debug:removeBreakpoint', sessionId, filePath, line),
+    continue: (sessionId: string): Promise<void> => ipcRenderer.invoke('debug:continue', sessionId),
+    stepOver: (sessionId: string): Promise<void> => ipcRenderer.invoke('debug:stepOver', sessionId),
+    stepInto: (sessionId: string): Promise<void> => ipcRenderer.invoke('debug:stepInto', sessionId),
+    stepOut: (sessionId: string): Promise<void> => ipcRenderer.invoke('debug:stepOut', sessionId),
+    pause: (sessionId: string): Promise<void> => ipcRenderer.invoke('debug:pause', sessionId),
+    getProperties: (sessionId: string, objectId: string): Promise<DebugVariable[]> =>
+      ipcRenderer.invoke('debug:getProperties', sessionId, objectId),
+    evaluate: (sessionId: string, callFrameId: string, expression: string): Promise<unknown> =>
+      ipcRenderer.invoke('debug:evaluate', sessionId, callFrameId, expression),
+    stop: (sessionId: string): Promise<void> => ipcRenderer.invoke('debug:stop', sessionId),
+    onPaused: (sessionId: string, cb: (event: DebugPausedEvent) => void) => {
+      const channel = `debug:paused:${sessionId}`
+      const listener = (_e: Electron.IpcRendererEvent, payload: DebugPausedEvent) => cb(payload)
+      ipcRenderer.on(channel, listener)
+      return () => ipcRenderer.removeListener(channel, listener)
+    },
+    onResumed: (sessionId: string, cb: () => void) => {
+      const channel = `debug:resumed:${sessionId}`
+      const listener = () => cb()
+      ipcRenderer.on(channel, listener)
+      return () => ipcRenderer.removeListener(channel, listener)
+    },
+    onOutput: (sessionId: string, cb: (event: DebugOutputEvent) => void) => {
+      const channel = `debug:output:${sessionId}`
+      const listener = (_e: Electron.IpcRendererEvent, payload: DebugOutputEvent) => cb(payload)
+      ipcRenderer.on(channel, listener)
+      return () => ipcRenderer.removeListener(channel, listener)
+    },
+    onTerminated: (sessionId: string, cb: (event: { code: number | null }) => void) => {
+      const channel = `debug:terminated:${sessionId}`
+      const listener = (_e: Electron.IpcRendererEvent, payload: { code: number | null }) => cb(payload)
+      ipcRenderer.on(channel, listener)
+      return () => ipcRenderer.removeListener(channel, listener)
+    },
+    onError: (sessionId: string, cb: (message: string) => void) => {
+      const channel = `debug:error:${sessionId}`
+      const listener = (_e: Electron.IpcRendererEvent, message: string) => cb(message)
+      ipcRenderer.on(channel, listener)
+      return () => ipcRenderer.removeListener(channel, listener)
+    }
   },
   ollama: {
     sendMessage: (requestId: string, model: string, messages: ChatMessage[]): Promise<void> =>

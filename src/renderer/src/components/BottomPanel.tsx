@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import TerminalInstance from './TerminalInstance'
 import { TerminalIcon, CloseIcon } from './Icons'
+import type { DebugOutputLine } from '../useDebugger'
 
 type PanelTab = 'problems' | 'output' | 'debug' | 'terminal' | 'ports'
 
@@ -20,6 +21,9 @@ interface Props {
   onOpenTerminalAtConsumed: () => void
   runCommand: string | null
   onRunConsumed: () => void
+  debugOutput: DebugOutputLine[]
+  debugPaused: boolean
+  onDebugEvaluate: (expression: string) => Promise<string>
   maximized: boolean
   onToggleMaximize: () => void
   onClose: () => void
@@ -43,6 +47,9 @@ export default function BottomPanel({
   onOpenTerminalAtConsumed,
   runCommand,
   onRunConsumed,
+  debugOutput,
+  debugPaused,
+  onDebugEvaluate,
   maximized,
   onToggleMaximize,
   onClose
@@ -153,10 +160,7 @@ export default function BottomPanel({
       )}
 
       {activeTab === 'debug' && (
-        <div className="empty-state" style={{ flex: 1, overflow: 'auto' }}>
-          No active debug session. LLMRaki doesn't have step-through debugging (breakpoints, call
-          stack) — see Run and Debug in the sidebar for what it can do instead.
-        </div>
+        <DebugConsole output={debugOutput} paused={debugPaused} onEvaluate={onDebugEvaluate} />
       )}
 
       {activeTab === 'ports' && (
@@ -212,6 +216,98 @@ export default function BottomPanel({
           )}
         </div>
       )}
+    </div>
+  )
+}
+
+interface DebugConsoleEntry {
+  id: number
+  kind: 'output' | 'input' | 'result'
+  stream?: DebugOutputLine['stream']
+  text: string
+}
+
+function DebugConsole({
+  output,
+  paused,
+  onEvaluate
+}: {
+  output: DebugOutputLine[]
+  paused: boolean
+  onEvaluate: (expression: string) => Promise<string>
+}): JSX.Element {
+  const [expression, setExpression] = useState('')
+  const [evalEntries, setEvalEntries] = useState<{ id: number; kind: 'input' | 'result'; text: string }[]>([])
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const evalCounter = useRef(0)
+
+  const entries: DebugConsoleEntry[] = [
+    ...output.map((o) => ({ id: o.id, kind: 'output' as const, stream: o.stream, text: o.text })),
+    ...evalEntries
+  ].sort((a, b) => a.id - b.id)
+
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
+  }, [entries.length])
+
+  async function submit(): Promise<void> {
+    const expr = expression.trim()
+    if (!expr || !paused) return
+    setExpression('')
+    evalCounter.current -= 1
+    const inputId = evalCounter.current
+    setEvalEntries((prev) => [...prev, { id: inputId, kind: 'input', text: `> ${expr}` }])
+    const result = await onEvaluate(expr)
+    evalCounter.current -= 1
+    setEvalEntries((prev) => [...prev, { id: evalCounter.current, kind: 'result', text: result }])
+  }
+
+  return (
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+      <div ref={scrollRef} style={{ flex: 1, overflow: 'auto', padding: '4px 12px', fontFamily: 'var(--font-mono, monospace)', fontSize: 12 }}>
+        {entries.length === 0 && (
+          <div style={{ color: 'var(--text-muted)' }}>
+            No active debug session. Start debugging a JavaScript file from Run and Debug in the
+            sidebar to see program output and evaluate expressions here.
+          </div>
+        )}
+        {entries.map((e) => (
+          <div
+            key={e.id}
+            style={{
+              whiteSpace: 'pre-wrap',
+              color:
+                e.kind === 'input'
+                  ? 'var(--accent-bright)'
+                  : e.stream === 'stderr'
+                    ? 'var(--danger)'
+                    : e.kind === 'result'
+                      ? 'var(--text-muted)'
+                      : 'var(--text-primary)'
+            }}
+          >
+            {e.text}
+          </div>
+        ))}
+      </div>
+      <input
+        value={expression}
+        onChange={(e) => setExpression(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') void submit()
+        }}
+        disabled={!paused}
+        placeholder={paused ? 'Evaluate an expression in the current frame…' : 'Pause at a breakpoint to evaluate expressions'}
+        style={{
+          border: 'none',
+          borderTop: '1px solid var(--border)',
+          background: 'var(--bg-input)',
+          color: 'var(--text-primary)',
+          padding: '6px 12px',
+          fontFamily: 'var(--font-mono, monospace)',
+          fontSize: 12
+        }}
+      />
     </div>
   )
 }

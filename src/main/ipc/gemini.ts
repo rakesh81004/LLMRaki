@@ -8,6 +8,25 @@ import type { ChatMessage } from './openai'
 
 const activeRequests = new Map<string, AbortController>()
 
+// Files the model has actually read_file'd in this conversation — edit_file and write_file (for
+// files that already exist) refuse to run against a path that isn't in here yet, the same
+// read-before-edit guarantee a real coding assistant relies on to avoid overwriting a file based
+// on a guess at its content instead of what's actually on disk.
+const readFilesByRequest = new Map<string, Set<string>>()
+
+function markFileRead(requestId: string, fullPath: string): void {
+  let set = readFilesByRequest.get(requestId)
+  if (!set) {
+    set = new Set()
+    readFilesByRequest.set(requestId, set)
+  }
+  set.add(fullPath)
+}
+
+function hasReadFile(requestId: string, fullPath: string): boolean {
+  return readFilesByRequest.get(requestId)?.has(fullPath) ?? false
+}
+
 export type AgentMode = 'ask' | 'edit' | 'auto'
 
 const pendingPermissions = new Map<string, (allowed: boolean) => void>()
@@ -325,9 +344,31 @@ const READ_TOOL_DECLS = [
 
 const EDIT_TOOL_DECLS = [
   {
+    name: 'edit_file',
+    description:
+      'The preferred way to change an EXISTING file: replace one exact, unique snippet of its current text with new text, leaving the rest of the file untouched. You must read_file this exact file in this conversation first. old_text must match the file\'s current content exactly — same whitespace, indentation, and line breaks — and must occur exactly once in the file; if it could match more than once, include a few extra surrounding lines to make it unique (or pass replace_all to change every occurrence on purpose). Prefer many small edit_file calls over one write_file rewrite: each only needs to reproduce the lines that actually change, not the whole file, so there is far less room to drop or corrupt unrelated code. Applies immediately with an undo option — do not ask permission first.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        path: { type: 'STRING', description: 'File path relative to the project root' },
+        old_text: {
+          type: 'STRING',
+          description:
+            'The exact existing text to replace, copied verbatim from what read_file returned (after stripping the "N: " line-number prefix) — including exact whitespace/indentation.'
+        },
+        new_text: { type: 'STRING', description: 'The text to replace it with.' },
+        replace_all: {
+          type: 'BOOLEAN',
+          description: 'Replace every occurrence of old_text instead of requiring it to be unique. Defaults to false.'
+        }
+      },
+      required: ['path', 'old_text', 'new_text']
+    }
+  },
+  {
     name: 'write_file',
     description:
-      'Create a new file or overwrite an existing file with the given full file content, relative to the project root. This is the only way to change code — it applies immediately and is shown to the user with an undo option, so do not ask the user for permission before calling this.',
+      'Create a brand-new file, or fully replace an existing file\'s content, relative to the project root. For an EXISTING file, only use this for a genuine full-file rewrite (e.g. restructuring the whole thing) — for a targeted change, use edit_file instead, since write_file requires you to reproduce every unrelated line correctly too, which is where mistakes creep in on anything but small files. If the file already exists you must read_file it first in this conversation. Applies immediately and is shown to the user with an undo option, so do not ask the user for permission before calling this.',
     parameters: {
       type: 'OBJECT',
       properties: {
@@ -358,12 +399,16 @@ function buildTools(mode: AgentMode): { functionDeclarations: unknown[] }[] {
 
 const TERMINAL_POLICY =
   'For run_terminal_command: most commands (building, testing, git commit/checkout/branch/merge, moving/creating/deleting local files, etc.) run immediately — just call them normally, no need to warn the user first. Only three things ever pause for the user\'s explicit permission, handled automatically by the app based on the command itself: installing a package (npm/pip/brew/etc install), pushing or publishing something outside the project (git push, npm publish, docker push), or talking directly to a third-party endpoint (curl, wget, ssh, scp, etc). You never need to ask the user in chat either way — just call the tool and respect whatever comes back. ' +
-  'When asked to undo, revert, or roll back changes — especially your own previous edits in this conversation — do it by calling write_file directly with the original content (which you already read or wrote earlier in this conversation), NOT by running a broad git command like `git checkout -- <path>`, `git reset`, or `git clean`. Those operate on the whole working tree and would also discard the user\'s own unrelated uncommitted work, not just your edits — the exact opposite of "revert only the changes made by you". Only use a git-based revert if the user explicitly asks for a git reset/checkout by name.'
+  'When asked to undo, revert, or roll back changes — especially your own previous edits in this conversation — do it by calling edit_file or write_file directly with the original content (which you already read or wrote earlier in this conversation), NOT by running a broad git command like `git checkout -- <path>`, `git reset`, or `git clean`. Those operate on the whole working tree and would also discard the user\'s own unrelated uncommitted work, not just your edits — the exact opposite of "revert only the changes made by you". Only use a git-based revert if the user explicitly asks for a git reset/checkout by name.'
 
 const APPLY_INSTRUCTION =
-  'When the user asks you to fix, change, add, remove, refactor, clean up, or optimize something in the code, you MUST actually call write_file to make that change yourself — do not just describe the fix, list what should change, or print "here is the optimized/clean implementation" as a fenced code block in your text response and stop there. A code block in your chat reply is NEVER a substitute for calling write_file — if you already know what the new file content should be (you just wrote it out to show the user), that means you have everything you need to call write_file with that exact content right now, so do it instead of only printing it. Describing or showing example code without calling write_file is treated as not having done the task at all. Only skip write_file if the user is purely asking a question with no request to change anything. ' +
-  'If the same fix/pattern applies to multiple files (e.g. "remove use client from these 12 components", "apply this optimization across all X sections"), apply it directly to EVERY one of those files via write_file in this response — do not fix just one file as a demonstration and list the rest under "next steps" or "apply this same pattern to" for the user to ask about again; that is treated as leaving the task unfinished. If you truly cannot get to every file within your tool budget, apply write_file to as many as you can and explicitly say which ones are left, rather than doing only one and describing the rest. ' +
-  'In your final answer, NEVER say a file was fixed/changed/updated/cleaned up/optimized unless you actually got a successful write_file result for that exact file earlier in this same conversation — for every file you identified but did not actually call write_file on, say plainly that you did not get to it yet, do not imply it was done.'
+  'When the user asks you to fix, change, add, remove, refactor, clean up, or optimize something in the code, you MUST actually call edit_file (preferred for an existing file) or write_file to make that change yourself — do not just describe the fix, list what should change, or print "here is the optimized/clean implementation" as a fenced code block in your text response and stop there. A code block in your chat reply is NEVER a substitute for actually calling the tool — if you already know what the new code should be (you just wrote it out to show the user), that means you have everything you need to call edit_file with that exact old/new text right now, so do it instead of only printing it. Describing or showing example code without calling edit_file/write_file is treated as not having done the task at all. Only skip them if the user is purely asking a question with no request to change anything. ' +
+  'Default to edit_file for changes to a file that already exists — one call per distinct change, each with only the lines actually changing. Reach for write_file on an existing file only when the change genuinely touches most of the file; reproducing the entire file to change a few lines is exactly how unrelated code gets dropped or corrupted, since every single line has to come out right, not just the ones you meant to touch. ' +
+  'If the same fix/pattern applies to multiple files (e.g. "remove use client from these 12 components", "apply this optimization across all X sections"), apply it directly to EVERY one of those files via edit_file/write_file in this response — do not fix just one file as a demonstration and list the rest under "next steps" or "apply this same pattern to" for the user to ask about again; that is treated as leaving the task unfinished. If you truly cannot get to every file within your tool budget, apply the fix to as many as you can and explicitly say which ones are left, rather than doing only one and describing the rest. ' +
+  'In your final answer, NEVER say a file was fixed/changed/updated/cleaned up/optimized unless you actually got a successful edit_file/write_file result for that exact file earlier in this same conversation — for every file you identified but did not actually change, say plainly that you did not get to it yet, do not imply it was done.'
+
+const VERIFICATION_INSTRUCTION =
+  'After making code edits that could plausibly break compilation or introduce a syntax error (multi-line logic changes, edits across several files, anything you are not fully certain about — not a comment, a string, or a CSS-only tweak), check your own work before your final answer: look at package.json\'s "scripts" for a typecheck/build/lint command (or run `tsc --noEmit` directly in a TypeScript project) and run it via run_terminal_command. If it reports errors in files you touched, fix them with edit_file and re-run the check, the same way you would fix any other bug — do not leave broken code and mention the error in prose instead of fixing it. Skip this for trivial or purely textual changes where it would not catch anything real.'
 
 const MODE_INSTRUCTIONS: Record<AgentMode, string> = {
   ask: 'You are in ASK mode: read-only. You can search, list, and read files, but you cannot create or edit files or run terminal commands. If the user wants changes made, tell them to switch to Edit or Auto mode.',
@@ -371,12 +416,16 @@ const MODE_INSTRUCTIONS: Record<AgentMode, string> = {
     'You are in EDIT mode. ' +
     APPLY_INSTRUCTION +
     ' Edits apply immediately and the user sees a real diff with an undo option, so do not ask permission before editing files. ' +
-    TERMINAL_POLICY,
+    TERMINAL_POLICY +
+    ' ' +
+    VERIFICATION_INSTRUCTION,
   auto:
     'You are in AUTO mode. ' +
     APPLY_INSTRUCTION +
-    ' Work autonomously through multi-step tasks — read, search, and edit as many files as needed via write_file without pausing to ask the user for confirmation on each edit. ' +
-    TERMINAL_POLICY
+    ' Work autonomously through multi-step tasks — read, search, and edit as many files as needed via edit_file/write_file without pausing to ask the user for confirmation on each edit. ' +
+    TERMINAL_POLICY +
+    ' ' +
+    VERIFICATION_INSTRUCTION
 }
 
 function toRelative(root: string, filePath: string): string {
@@ -390,15 +439,24 @@ function withLineNumbers(content: string): string {
     .join('\n')
 }
 
-function firstMatchingLine(content: string, keywords: string[]): { line: number; text: string } {
+// A single first-match preview per file forces the model into a read_file round trip just to see
+// whether a hit is actually relevant — returning every matching line (up to a cap) lets it judge
+// relevance, and often write a correct edit_file call, straight from the search results.
+function matchingLines(
+  content: string,
+  keywords: string[],
+  maxLines: number
+): { line: number; text: string }[] {
   const lines = content.split('\n')
-  for (let i = 0; i < lines.length; i++) {
+  const hits: { line: number; text: string }[] = []
+  for (let i = 0; i < lines.length && hits.length < maxLines; i++) {
     const lower = lines[i].toLowerCase()
     if (keywords.some((kw) => lower.includes(kw))) {
-      return { line: i + 1, text: lines[i].trim().slice(0, 200) }
+      hits.push({ line: i + 1, text: lines[i].trim().slice(0, 200) })
     }
   }
-  return { line: 1, text: content.trim().slice(0, 200) }
+  if (hits.length === 0) hits.push({ line: 1, text: content.trim().slice(0, 200) })
+  return hits
 }
 
 function requestTerminalPermission(
@@ -477,12 +535,12 @@ async function executeAgentTool(
     const query = typeof args.query === 'string' ? args.query : ''
     const keywords = extractKeywords(query)
     const matches = await findMatchingFiles(rootFolder, query, 15)
-    const forModel = matches.map((m) => {
-      const { line, text } = firstMatchingLine(m.content, keywords)
-      return { path: toRelative(rootFolder, m.path), line, preview: text }
-    })
+    const forModel = matches.map((m) => ({
+      path: toRelative(rootFolder, m.path),
+      matches: matchingLines(m.content, keywords, 8)
+    }))
     return {
-      progressLabel: `Searched for "${query}" (${forModel.length} match${forModel.length === 1 ? '' : 'es'})`,
+      progressLabel: `Searched for "${query}" (${forModel.length} file${forModel.length === 1 ? '' : 's'})`,
       resultForModel: forModel.length > 0 ? forModel : 'No matches found.'
     }
   }
@@ -496,6 +554,7 @@ async function executeAgentTool(
         return { progressLabel: `Read ${rel} (too large)`, resultForModel: 'File too large to read.' }
       }
       const content = await fs.readFile(fullPath, 'utf-8')
+      markFileRead(requestId, fullPath)
       const numbered = withLineNumbers(content)
       const truncated = numbered.length > 8000
       return {
@@ -527,11 +586,73 @@ async function executeAgentTool(
     }
   }
 
-  if (name === 'write_file' || name === 'run_terminal_command') {
+  if (name === 'write_file' || name === 'edit_file' || name === 'run_terminal_command') {
     if (mode === 'ask') {
       return {
         progressLabel: `Blocked: ${name}`,
         resultForModel: 'Error: this session is in Ask mode (read-only). Tell the user to switch to Edit or Auto mode to make changes.'
+      }
+    }
+  }
+
+  if (name === 'edit_file') {
+    const rel = typeof args.path === 'string' ? args.path : ''
+    const oldText = typeof args.old_text === 'string' ? args.old_text : ''
+    const newText = typeof args.new_text === 'string' ? args.new_text : ''
+    const replaceAll = args.replace_all === true
+    const fullPath = path.isAbsolute(rel) ? rel : path.join(rootFolder, rel)
+
+    if (!hasReadFile(requestId, fullPath)) {
+      return {
+        progressLabel: `Blocked: edit_file ${rel}`,
+        resultForModel:
+          'Error: you have not read_file this exact file in this conversation yet. Read it first — an edit must be based on its real current content, not a guess.'
+      }
+    }
+    if (!oldText) {
+      return { progressLabel: `Failed to edit ${rel}`, resultForModel: 'Error: old_text must not be empty.' }
+    }
+
+    let current: string
+    try {
+      current = await fs.readFile(fullPath, 'utf-8')
+    } catch (err) {
+      return {
+        progressLabel: `Failed to edit ${rel}`,
+        resultForModel: `Error: ${err instanceof Error ? err.message : String(err)}`
+      }
+    }
+
+    const occurrences = current.split(oldText).length - 1
+    if (occurrences === 0) {
+      return {
+        progressLabel: `Failed to edit ${rel}`,
+        resultForModel:
+          'Error: old_text was not found in the file. It must match the current content exactly, including whitespace and indentation — re-check what read_file returned (after stripping the "N: " prefix) and copy it verbatim.'
+      }
+    }
+    if (occurrences > 1 && !replaceAll) {
+      return {
+        progressLabel: `Failed to edit ${rel}`,
+        resultForModel: `Error: old_text matches ${occurrences} places in the file, so this edit is ambiguous. Include more surrounding lines to make it unique, or pass replace_all: true if you actually want every occurrence changed.`
+      }
+    }
+
+    const updated = replaceAll ? current.split(oldText).join(newText) : current.replace(oldText, newText)
+    try {
+      await fs.writeFile(fullPath, updated, 'utf-8')
+      markFileRead(requestId, fullPath)
+      win.webContents.send(`ai:fileEdit:${requestId}`, {
+        path: fullPath,
+        relativePath: rel,
+        oldContent: current,
+        newContent: updated
+      })
+      return { progressLabel: `Edited ${rel}`, resultForModel: 'Edit applied successfully.' }
+    } catch (err) {
+      return {
+        progressLabel: `Failed to edit ${rel}`,
+        resultForModel: `Error: ${err instanceof Error ? err.message : String(err)}`
       }
     }
   }
@@ -546,16 +667,29 @@ async function executeAgentTool(
     } catch {
       oldContent = null
     }
+
+    if (oldContent !== null && !hasReadFile(requestId, fullPath)) {
+      return {
+        progressLabel: `Blocked: write_file ${rel}`,
+        resultForModel:
+          'Error: this file already exists and you have not read_file it in this conversation yet. Read it first so the rewrite is based on its real current content — or, better, use edit_file for a targeted change instead of overwriting the whole file.'
+      }
+    }
+
     try {
       await fs.mkdir(path.dirname(fullPath), { recursive: true })
       await fs.writeFile(fullPath, content, 'utf-8')
+      markFileRead(requestId, fullPath)
       win.webContents.send(`ai:fileEdit:${requestId}`, {
         path: fullPath,
         relativePath: rel,
         oldContent,
         newContent: content
       })
-      return { progressLabel: `Edited ${rel}`, resultForModel: 'File written successfully.' }
+      return {
+        progressLabel: oldContent === null ? `Created ${rel}` : `Rewrote ${rel} (full file)`,
+        resultForModel: 'File written successfully.'
+      }
     } catch (err) {
       return {
         progressLabel: `Failed to write ${rel}`,
@@ -882,6 +1016,7 @@ async function runGeminiAgent(
     }
   } finally {
     activeRequests.delete(requestId)
+    readFilesByRequest.delete(requestId)
   }
 }
 
