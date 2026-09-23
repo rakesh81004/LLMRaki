@@ -61,8 +61,8 @@ function ScopeNode({
   return (
     <div>
       <div className="tree-item" onClick={() => setOpen((v) => !v)}>
-        <span style={{ width: 12 }}>{open ? '▾' : '▸'}</span>
-        <span>{label}</span>
+        <span style={{ width: 12, flexShrink: 0 }}>{open ? '▾' : '▸'}</span>
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
       </div>
       {open &&
         (vars ?? []).map((v) => (
@@ -102,10 +102,31 @@ function VariableNode({
 
   return (
     <div>
-      <div className="tree-item" style={{ paddingLeft: 8 + depth * 14 }} onClick={toggle}>
-        <span style={{ width: 12 }}>{expandable ? (open ? '▾' : '▸') : ''}</span>
-        <span style={{ color: 'var(--accent-bright)' }}>{variable.name}</span>
-        <span style={{ marginLeft: 6, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+      <div className="tree-item" style={{ paddingLeft: 8 + depth * 14, minWidth: 0 }} onClick={toggle}>
+        <span style={{ width: 12, flexShrink: 0 }}>{expandable ? (open ? '▾' : '▸') : ''}</span>
+        <span
+          style={{
+            color: 'var(--accent-bright)',
+            flexShrink: 0,
+            maxWidth: '45%',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap'
+          }}
+        >
+          {variable.name}
+        </span>
+        <span
+          style={{
+            marginLeft: 6,
+            color: 'var(--text-muted)',
+            flex: 1,
+            minWidth: 0,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap'
+          }}
+        >
           {display}
         </span>
       </div>
@@ -198,7 +219,7 @@ export default function RunPanel({
       )}
 
       {sessionActive && (
-        <div style={{ flex: 1, overflow: 'auto' }}>
+        <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
           <div className="run-section-header">CALL STACK</div>
           {debugState.callFrames.length === 0 && (
             <div className="empty-state" style={{ padding: '4px 12px' }}>
@@ -214,8 +235,28 @@ export default function RunPanel({
                 onOpenFile(frame.path, frame.line)
               }}
             >
-              <span style={{ flex: 1 }}>{frame.functionName}</span>
-              <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>
+              <span
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap'
+                }}
+              >
+                {frame.functionName}
+              </span>
+              <span
+                style={{
+                  color: 'var(--text-muted)',
+                  fontSize: 11,
+                  flexShrink: 0,
+                  maxWidth: '45%',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap'
+                }}
+              >
                 {baseName(frame.path)}:{frame.line}
               </span>
             </div>
@@ -249,12 +290,22 @@ export default function RunPanel({
               className="tree-item"
               onClick={() => onOpenFile(bp.path, bp.line)}
             >
-              <span className="breakpoint-dot" />
-              <span style={{ flex: 1, marginLeft: 6 }}>
+              <span className="breakpoint-dot" style={{ flexShrink: 0 }} />
+              <span
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  marginLeft: 6,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap'
+                }}
+              >
                 {baseName(bp.path)}:{bp.line}
               </span>
               <button
                 className="close-btn"
+                style={{ flexShrink: 0 }}
                 onClick={(e) => {
                   e.stopPropagation()
                   onToggleBreakpoint(bp.path, bp.line)

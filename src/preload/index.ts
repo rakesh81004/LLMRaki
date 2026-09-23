@@ -180,6 +180,10 @@ export interface CommandAutoRunEvent {
 }
 
 const api = {
+  platform: process.platform,
+  windowControl: {
+    performRole: (role: string): Promise<void> => ipcRenderer.invoke('window:performRole', role)
+  },
   fs: {
     openFolder: (): Promise<OpenFolderResult | null> => ipcRenderer.invoke('fs:openFolder'),
     openFolderAtPath: (folderPath: string): Promise<OpenFolderResult | null> =>
@@ -215,6 +219,7 @@ const api = {
     hasApiKey: (): Promise<boolean> => ipcRenderer.invoke('settings:hasApiKey'),
     setApiKey: (key: string): Promise<void> => ipcRenderer.invoke('settings:setApiKey', key),
     clearApiKey: (): Promise<void> => ipcRenderer.invoke('settings:clearApiKey'),
+    revealApiKey: (): Promise<string | null> => ipcRenderer.invoke('settings:revealApiKey'),
     getModel: (): Promise<string> => ipcRenderer.invoke('settings:getModel'),
     setModel: (model: string): Promise<void> => ipcRenderer.invoke('settings:setModel', model),
     getProvider: (): Promise<'openai' | 'ollama' | 'gemini'> =>
@@ -227,6 +232,7 @@ const api = {
     hasGeminiKey: (): Promise<boolean> => ipcRenderer.invoke('settings:hasGeminiKey'),
     setGeminiKey: (key: string): Promise<void> => ipcRenderer.invoke('settings:setGeminiKey', key),
     clearGeminiKey: (): Promise<void> => ipcRenderer.invoke('settings:clearGeminiKey'),
+    revealGeminiKey: (): Promise<string | null> => ipcRenderer.invoke('settings:revealGeminiKey'),
     getGeminiModel: (): Promise<string> => ipcRenderer.invoke('settings:getGeminiModel'),
     setGeminiModel: (model: string): Promise<void> =>
       ipcRenderer.invoke('settings:setGeminiModel', model),

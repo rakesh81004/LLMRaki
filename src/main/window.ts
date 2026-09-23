@@ -18,6 +18,16 @@ export function createWindow(): BrowserWindow {
     }
   })
 
+  // `titleBarStyle: 'hiddenInset'` above is macOS-only — Electron silently ignores it on
+  // Windows/Linux, which fall back to the full native frame *and* native application menu
+  // (Menu.setApplicationMenu in menu.ts), rendered as a separate OS-themed strip outside the
+  // app's own dark UI. Hiding the menu bar here (not removing the Menu itself) keeps every
+  // accelerator in menu.ts's template working — only the visible native strip goes away, so
+  // MenuBar.tsx can draw an in-page equivalent that actually matches the app's theme.
+  if (process.platform !== 'darwin') {
+    win.setMenuBarVisibility(false)
+  }
+
   win.on('ready-to-show', () => {
     win.show()
   })

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { CheckIcon, CopyIcon, EyeIcon, EyeOffIcon } from './Icons'
 
 interface GeminiModelInfo {
   id: string
@@ -45,6 +46,105 @@ const STATUS_COLOR: Record<GeminiAvailabilityStatus, string> = {
 }
 
 type Provider = 'openai' | 'ollama' | 'gemini'
+
+const MASKED_KEY_DISPLAY = '•'.repeat(28)
+
+// Shows a saved API key hidden by default, with an eye toggle to reveal it, a copy button, and a
+// remove button — the decrypted value is only fetched from the main process the first time it's
+// actually needed (revealed or copied), never preloaded just because the key exists.
+function RevealableApiKey({
+  reveal,
+  onRemove
+}: {
+  reveal: () => Promise<string | null>
+  onRemove: () => void
+}): JSX.Element {
+  const [value, setValue] = useState<string | null>(null)
+  const [visible, setVisible] = useState(false)
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
+
+  async function ensureLoaded(): Promise<string | null> {
+    if (value !== null) return value
+    const key = await reveal()
+    setValue(key)
+    return key
+  }
+
+  async function handleToggleVisible(): Promise<void> {
+    if (!visible) await ensureLoaded()
+    setVisible((v) => !v)
+  }
+
+  // navigator.clipboard.writeText can reject with "Document is not focused" depending on exactly
+  // how the click reached the page — fall back to the older execCommand path (which has no such
+  // focus requirement) rather than leaving the button silently doing nothing.
+  function copyViaExecCommand(text: string): boolean {
+    const textarea = document.createElement('textarea')
+    textarea.value = text
+    textarea.style.position = 'fixed'
+    textarea.style.opacity = '0'
+    document.body.appendChild(textarea)
+    textarea.focus()
+    textarea.select()
+    let ok = false
+    try {
+      ok = document.execCommand('copy')
+    } catch {
+      ok = false
+    }
+    document.body.removeChild(textarea)
+    return ok
+  }
+
+  async function handleCopy(): Promise<void> {
+    const key = await ensureLoaded()
+    if (!key) return
+    let ok = true
+    try {
+      await navigator.clipboard.writeText(key)
+    } catch {
+      ok = copyViaExecCommand(key)
+    }
+    setCopyState(ok ? 'copied' : 'failed')
+    setTimeout(() => setCopyState('idle'), 1500)
+  }
+
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', flex: 1, minWidth: 0 }}>
+      <input
+        readOnly
+        type="text"
+        value={visible ? (value ?? '') : MASKED_KEY_DISPLAY}
+        style={{
+          flex: '1 1 90px',
+          minWidth: 90,
+          fontFamily: 'monospace',
+          letterSpacing: visible ? 'normal' : '2px'
+        }}
+      />
+      {/* Kept together as one group so they wrap to their own line as a unit, rather than the
+          input being squeezed down to an unreadable sliver to keep everything on one line. */}
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
+        <button className="close-btn" title={visible ? 'Hide key' : 'Show key'} onClick={handleToggleVisible}>
+          {visible ? <EyeOffIcon /> : <EyeIcon />}
+        </button>
+        <button
+          className="close-btn"
+          title={copyState === 'failed' ? 'Copy failed — try again' : 'Copy key'}
+          onClick={handleCopy}
+        >
+          {copyState === 'copied' ? <CheckIcon /> : <CopyIcon />}
+        </button>
+        {copyState === 'failed' && (
+          <span style={{ color: 'var(--danger)', fontSize: 11 }}>Copy failed</span>
+        )}
+        <button className="btn-secondary btn" onClick={onRemove}>
+          Remove
+        </button>
+      </div>
+    </div>
+  )
+}
 
 export default function SettingsPanel(): JSX.Element {
   const [provider, setProvider] = useState<Provider>('ollama')
@@ -173,12 +273,7 @@ export default function SettingsPanel(): JSX.Element {
             <div className="settings-field">
               <label>OpenAI API Key</label>
               {hasApiKey ? (
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                  <span style={{ color: 'var(--success)' }}>●&nbsp; Key configured</span>
-                  <button className="btn-secondary btn" onClick={handleClearKey}>
-                    Remove
-                  </button>
-                </div>
+                <RevealableApiKey reveal={() => window.api.settings.revealApiKey()} onRemove={handleClearKey} />
               ) : (
                 <div style={{ display: 'flex', gap: 8 }}>
                   <input
@@ -227,12 +322,10 @@ export default function SettingsPanel(): JSX.Element {
             <div className="settings-field">
               <label>Gemini API Key</label>
               {hasGeminiKey ? (
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                  <span style={{ color: 'var(--success)' }}>●&nbsp; Key configured</span>
-                  <button className="btn-secondary btn" onClick={handleClearGeminiKey}>
-                    Remove
-                  </button>
-                </div>
+                <RevealableApiKey
+                  reveal={() => window.api.settings.revealGeminiKey()}
+                  onRemove={handleClearGeminiKey}
+                />
               ) : (
                 <div style={{ display: 'flex', gap: 8 }}>
                   <input
@@ -288,9 +381,16 @@ export default function SettingsPanel(): JSX.Element {
 
             {hasGeminiKey && (
               <div className="settings-field">
-                <label style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span>Current Availability</span>
-                  <button className="btn btn-secondary" style={{ padding: '2px 8px', fontSize: 11 }} onClick={handleCheckAvailability} disabled={checkingAvailability}>
+                <label style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                  <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    Current Availability
+                  </span>
+                  <button
+                    className="btn btn-secondary"
+                    style={{ padding: '2px 8px', fontSize: 11, flexShrink: 0 }}
+                    onClick={handleCheckAvailability}
+                    disabled={checkingAvailability}
+                  >
                     {checkingAvailability ? 'Checking…' : 'Check now'}
                   </button>
                 </label>
@@ -310,9 +410,21 @@ export default function SettingsPanel(): JSX.Element {
                           style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}
                           title={result.message ?? ''}
                         >
-                          <span style={{ color: STATUS_COLOR[result.status] }}>●</span>
-                          <span style={{ flex: 1 }}>{m.displayName}</span>
-                          <span style={{ color: 'var(--text-muted)' }}>{STATUS_LABEL[result.status]}</span>
+                          <span style={{ color: STATUS_COLOR[result.status], flexShrink: 0 }}>●</span>
+                          <span
+                            style={{
+                              flex: 1,
+                              minWidth: 0,
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap'
+                            }}
+                          >
+                            {m.displayName}
+                          </span>
+                          <span style={{ color: 'var(--text-muted)', flexShrink: 0 }}>
+                            {STATUS_LABEL[result.status]}
+                          </span>
                         </div>
                       )
                     })}

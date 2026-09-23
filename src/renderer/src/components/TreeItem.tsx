@@ -97,16 +97,18 @@ export default function TreeItem({
         }}
       >
         {entry.isDirectory ? (
-          <span className={`chevron ${expanded ? 'expanded' : ''}`}>
+          <span className={`chevron ${expanded ? 'expanded' : ''}`} style={{ flexShrink: 0 }}>
             <ChevronIcon />
           </span>
         ) : (
-          <span className="chevron" />
+          <span className="chevron" style={{ flexShrink: 0 }} />
         )}
-        <span className="file-icon">
+        <span className="file-icon" style={{ flexShrink: 0 }}>
           {entry.isDirectory ? <FolderIcon /> : <FileTypeBadge fileName={entry.name} />}
         </span>
-        <span>{entry.name}</span>
+        <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {entry.name}
+        </span>
       </div>
       {expanded && loading && (
         <div style={{ paddingLeft: 8 + (depth + 1) * 14, color: 'var(--text-muted)' }}>

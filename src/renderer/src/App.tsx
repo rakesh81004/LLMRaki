@@ -11,10 +11,12 @@ import ChatPanel from './components/ChatPanel'
 import StatusBar from './components/StatusBar'
 import BottomPanel from './components/BottomPanel'
 import TopSearchBar from './components/TopSearchBar'
+import MenuBar from './components/MenuBar'
 import QuickOpen from './components/QuickOpen'
 import CommandPalette, { Command } from './components/CommandPalette'
 import ContextMenu, { ContextMenuEntry } from './components/ContextMenu'
 import InputModal from './components/InputModal'
+import { RefreshIcon } from './components/Icons'
 import { languageForFile } from './utils/language'
 import { loadProjectContext } from './projectIntelliSense'
 import { setDefinitionOpenHandler } from './monacoEditorOpener'
@@ -29,6 +31,7 @@ const COMMANDS: Command[] = [
   { id: 'save-file', label: 'File: Save' },
   { id: 'save-file-as', label: 'File: Save As…' },
   { id: 'close-tab', label: 'File: Close Editor' },
+  { id: 'refresh-workspace', label: 'File: Refresh Workspace' },
   { id: 'format-document', label: 'Format Document' },
   { id: 'goto-definition', label: 'Go to Definition' },
   { id: 'find-references', label: 'Find All References' },
@@ -144,6 +147,7 @@ export default function App(): JSX.Element {
 
   const [gitStatus, setGitStatus] = useState<GitStatus | null>(null)
   const [gitRefreshToken, setGitRefreshToken] = useState(0)
+  const [refreshSpinning, setRefreshSpinning] = useState(false)
 
   const [bottomPanelVisible, setBottomPanelVisible] = useState(false)
   const [panelMaximized, setPanelMaximized] = useState(false)
@@ -213,8 +217,8 @@ export default function App(): JSX.Element {
     loadProjectContext(rootFolder)
   }, [rootFolder])
 
-  const refreshWorkspaceRef = useRef(refreshWorkspaceAfterTerminal)
-  refreshWorkspaceRef.current = refreshWorkspaceAfterTerminal
+  const refreshWorkspaceRef = useRef(refreshWorkspace)
+  refreshWorkspaceRef.current = refreshWorkspace
 
   useEffect(() => {
     const off = window.api.fs.onChanged(() => {
@@ -561,7 +565,7 @@ export default function App(): JSX.Element {
   // A terminal command run by the AI can touch any number of files without telling us which —
   // unlike write_file, there's no single path to reload, so refresh the whole workspace: the file
   // tree, git status, and any open-but-unedited tab that might now be showing stale content.
-  function refreshWorkspaceAfterTerminal(): void {
+  function refreshWorkspace(): void {
     tabs
       .filter((t) => !t.isDirty && !t.isUntitled)
       .forEach((t) => {
@@ -714,6 +718,9 @@ export default function App(): JSX.Element {
       case 'close-tab':
         if (activePath) handleCloseTab(activePath)
         break
+      case 'refresh-workspace':
+        handleRefreshWorkspace()
+        break
       case 'format-document':
         setEditorActionSignal({ type: 'format', token: Date.now() })
         break
@@ -785,12 +792,25 @@ export default function App(): JSX.Element {
     ? gitStatus.staged.length + gitStatus.unstaged.length + gitStatus.untracked.length
     : 0
 
+  // Deliberately not a real window/page reload — that would wipe every open tab, the chat
+  // conversation, and every terminal's running shell along with it. This re-syncs the parts of
+  // the UI that can actually go stale (the file tree, git status, and on-disk content for tabs
+  // that aren't dirty) without touching anything else.
+  function handleRefreshWorkspace(): void {
+    refreshWorkspace()
+    setRefreshSpinning(true)
+    setTimeout(() => setRefreshSpinning(false), 600)
+  }
+
   return (
     <>
       <div className={`app-splash ${booting ? '' : 'app-splash-hidden'}`}>
         <img src={appLogo} alt="LLMRaki" className="app-splash-logo" />
       </div>
       <div className="app-shell">
+      {window.api.platform !== 'darwin' && (
+        <MenuBar onAction={handleRunAction} onRole={(role) => window.api.windowControl.performRole(role)} />
+      )}
       <div className="app-titlebar">
         <div className="titlebar-side left">{rootFolder ? rootFolder.split(/[/\\]/).pop() : 'LLMRaki'}</div>
         <TopSearchBar
@@ -800,7 +820,17 @@ export default function App(): JSX.Element {
             openFileByPath(filePath)
           }}
         />
-        <div className="titlebar-side right" />
+        <div className="titlebar-side right">
+          <button
+            className="titlebar-reload-btn"
+            title="Refresh (file tree, git status, and on-disk changes to open files)"
+            onClick={handleRefreshWorkspace}
+          >
+            <span className={refreshSpinning ? 'refresh-spin' : ''}>
+              <RefreshIcon />
+            </span>
+          </button>
+        </div>
       </div>
       <div className="app-body">
         <ActivityBar
@@ -930,7 +960,7 @@ export default function App(): JSX.Element {
                   forceIncludeSignal={chatIncludeSignal}
                   onFileChanged={reloadTabIfOpen}
                   onFileRemoved={closeTabIfOpen}
-                  onWorkspaceChanged={refreshWorkspaceAfterTerminal}
+                  onWorkspaceChanged={refreshWorkspace}
                 />
               </>
             )}

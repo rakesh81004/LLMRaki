@@ -28,9 +28,9 @@ export default function StatusBar({
   return (
     <div className="status-bar">
       {gitStatus?.isRepo && (
-        <button className="status-bar-btn" onClick={onOpenSourceControl} title="Source Control">
+        <button className="status-bar-btn" onClick={onOpenSourceControl} title={gitStatus.branch ?? 'detached'}>
           <SourceControlIcon />
-          <span>
+          <span className="status-bar-truncate">
             {gitStatus.branch ?? 'detached'}
             {changeCount > 0 ? `*` : ''}
           </span>
@@ -40,16 +40,26 @@ export default function StatusBar({
         <ErrorIcon /> <span>0</span>
         <WarningIcon /> <span>0</span>
       </button>
-      <span>{folderName ?? 'No folder opened'}</span>
-      {activeFileName && <span>{activeFileName}</span>}
-      <div style={{ flex: 1 }} />
+      <span className="status-bar-truncate" title={folderName ?? undefined}>
+        {folderName ?? 'No folder opened'}
+      </span>
+      {activeFileName && (
+        <span className="status-bar-truncate" title={activeFileName}>
+          {activeFileName}
+        </span>
+      )}
+      <div style={{ flex: 1, minWidth: 8 }} />
       {cursor && (
-        <span>
+        <span className="status-bar-fixed">
           Ln {cursor.line}, Col {cursor.column}
         </span>
       )}
-      {language && <span style={{ textTransform: 'capitalize' }}>{language}</span>}
-      <span>LLMRaki</span>
+      {language && (
+        <span className="status-bar-fixed" style={{ textTransform: 'capitalize' }}>
+          {language}
+        </span>
+      )}
+      <span className="status-bar-fixed">LLMRaki</span>
     </div>
   )
 }

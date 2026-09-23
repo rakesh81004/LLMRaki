@@ -7,6 +7,7 @@ import { registerOllamaHandlers } from './ipc/ollama'
 import { registerGeminiHandlers } from './ipc/gemini'
 import { registerInlineAiHandlers } from './ipc/inlineAi'
 import { registerNodeDebuggerHandlers, killAllDebugSessions } from './ipc/nodeDebugger'
+import { registerWindowControlHandlers } from './ipc/windowControl'
 import { registerTerminalHandlers, killAllTerminals } from './ipc/terminal'
 import { registerGitHandlers } from './ipc/git'
 import { registerSearchHandlers } from './ipc/search'
@@ -29,6 +30,7 @@ app.whenReady().then(() => {
   registerGeminiHandlers()
   registerInlineAiHandlers()
   registerNodeDebuggerHandlers()
+  registerWindowControlHandlers()
   registerTerminalHandlers()
   registerGitHandlers()
   registerSearchHandlers()

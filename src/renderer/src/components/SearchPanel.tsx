@@ -142,28 +142,40 @@ export default function SearchPanel({ rootFolder, onOpenMatch }: Props): JSX.Ele
             return (
               <div key={file}>
                 <div className="tree-item" onClick={() => toggleCollapsed(file)}>
-                  <span className={`chevron ${!isCollapsed ? 'expanded' : ''}`}>
+                  <span className={`chevron ${!isCollapsed ? 'expanded' : ''}`} style={{ flexShrink: 0 }}>
                     <ChevronIcon />
                   </span>
-                  <span className="file-icon">
+                  <span className="file-icon" style={{ flexShrink: 0 }}>
                     <FileTypeBadge fileName={fileName} />
                   </span>
-                  <span style={{ fontWeight: 600 }}>{fileName}</span>
-                  {dir && (
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 6, flex: 1, minWidth: 0 }}>
                     <span
                       style={{
-                        color: 'var(--text-muted)',
-                        fontSize: 11,
-                        marginLeft: 6,
+                        fontWeight: 600,
+                        flexShrink: 1,
                         overflow: 'hidden',
                         textOverflow: 'ellipsis',
                         whiteSpace: 'nowrap'
                       }}
                     >
-                      {dir}
+                      {fileName}
                     </span>
-                  )}
-                  <div style={{ flex: 1 }} />
+                    {dir && (
+                      <span
+                        style={{
+                          color: 'var(--text-muted)',
+                          fontSize: 11,
+                          flexShrink: 2,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                          opacity: 0.75
+                        }}
+                      >
+                        {dir}
+                      </span>
+                    )}
+                  </div>
                   <span
                     style={{
                       background: 'var(--bg-active)',
@@ -171,6 +183,8 @@ export default function SearchPanel({ rootFolder, onOpenMatch }: Props): JSX.Ele
                       borderRadius: 8,
                       fontSize: 10,
                       minWidth: 16,
+                      flexShrink: 0,
+                      marginLeft: 6,
                       textAlign: 'center',
                       padding: '1px 5px'
                     }}
@@ -191,6 +205,8 @@ export default function SearchPanel({ rootFolder, onOpenMatch }: Props): JSX.Ele
                       </span>
                       <span
                         style={{
+                          flex: 1,
+                          minWidth: 0,
                           overflow: 'hidden',
                           textOverflow: 'ellipsis',
                           whiteSpace: 'nowrap'

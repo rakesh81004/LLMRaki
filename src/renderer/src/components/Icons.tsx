@@ -58,6 +58,17 @@ export function EyeIcon(): JSX.Element {
   )
 }
 
+export function EyeOffIcon(): JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" width="14" height="14">
+      <path d="M3 3l18 18" />
+      <path d="M10.6 5.2C11 5.1 11.5 5 12 5c7 0 10.5 7 10.5 7a13.2 13.2 0 0 1-3.1 4" />
+      <path d="M6.6 6.6C3.6 8.5 1.5 12 1.5 12S5 19 12 19c1.4 0 2.7-.3 3.8-.7" />
+      <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" />
+    </svg>
+  )
+}
+
 export function SearchIcon(): JSX.Element {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
@@ -178,6 +189,18 @@ export function ClockIcon(): JSX.Element {
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" width="12" height="12">
       <circle cx="8" cy="8" r="6.5" />
       <path d="M8 4.5V8l2.5 1.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+export function RefreshIcon(): JSX.Element {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" width="13" height="13">
+      <path
+        d="M13.5 8A5.5 5.5 0 1 1 11.9 4.1"
+        strokeLinecap="round"
+      />
+      <path d="M13.7 2.5v3.2h-3.2" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   )
 }

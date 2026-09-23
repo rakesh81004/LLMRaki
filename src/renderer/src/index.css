@@ -154,6 +154,58 @@ textarea:focus {
   border-bottom: 1px solid var(--border);
 }
 
+/* Windows/Linux only (see App.tsx) — replaces the native application menu, which Electron
+   renders as a separate OS-themed strip outside the app's own dark UI on those platforms. */
+.app-menubar {
+  -webkit-app-region: drag;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 8px;
+  background: var(--bg-titlebar);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.menubar-item-wrapper {
+  position: relative;
+}
+
+.menubar-item {
+  -webkit-app-region: no-drag;
+  background: none;
+  border: none;
+  color: var(--text-primary);
+  font-size: 12.5px;
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.menubar-item:hover,
+.menubar-item.open {
+  background: var(--bg-hover);
+}
+
+.menubar-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 2px;
+  z-index: 200;
+}
+
+.menubar-dropdown-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.menubar-accelerator {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
 .titlebar-side {
   width: 200px;
   flex-shrink: 0;
@@ -167,7 +219,39 @@ textarea:focus {
 }
 
 .titlebar-side.right {
-  text-align: right;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+}
+
+.titlebar-reload-btn {
+  -webkit-app-region: no-drag;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  padding: 5px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.titlebar-reload-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.refresh-spin {
+  display: flex;
+  animation: refresh-spin-once 0.5s ease-in-out;
+}
+@keyframes refresh-spin-once {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .titlebar-search {
@@ -992,6 +1076,16 @@ textarea:focus {
 .code-block {
   display: flex;
 }
+.code-block-clickable {
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background-color 0.1s ease;
+}
+.code-block-clickable:hover {
+  background: rgba(var(--glow-rgb), 0.06);
+  outline: 1px solid rgba(var(--glow-rgb), 0.25);
+  outline-offset: -1px;
+}
 .code-block-gutter {
   display: flex;
   flex-direction: column;
@@ -1799,6 +1893,8 @@ textarea:focus {
 
 .settings-panel {
   padding: 16px;
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
 }
 
@@ -1846,12 +1942,14 @@ textarea:focus {
   font-size: 12px;
   gap: 16px;
   flex-shrink: 0;
+  overflow: hidden;
 }
 
 .status-bar span {
   display: flex;
   align-items: center;
   gap: 4px;
+  white-space: nowrap;
 }
 
 .status-bar-btn {
@@ -1864,9 +1962,31 @@ textarea:focus {
   display: flex;
   align-items: center;
   gap: 4px;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 .status-bar-btn:hover {
   background: rgba(255, 255, 255, 0.15);
+}
+
+/* A branch/folder/file name can be arbitrarily long — cap and ellipsize it instead of letting it
+   wrap onto a second line, which the bar's fixed 22px height would then just clip in half. Needs
+   display: inline-block (overriding the `.status-bar span { display: flex }` rule above) since
+   text-overflow: ellipsis has no effect on a flex container's text content. */
+.status-bar span.status-bar-truncate {
+  display: inline-block;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+/* The right-hand, fixed-content segments (cursor position, language, app name) — these must
+   never shrink or wrap, so a long branch/folder/file name to their left never pushes them
+   partially off-screen instead of just truncating itself first. */
+.status-bar span.status-bar-fixed {
+  flex-shrink: 0;
 }
 
 .palette-overlay {

@@ -62,6 +62,12 @@ export function registerSettingsHandlers(): void {
     await writeSettings(settings)
   })
 
+  // Only called when the user explicitly clicks "reveal" or "copy" in Settings — the decrypted
+  // key never crosses into the renderer otherwise.
+  ipcMain.handle('settings:revealApiKey', async () => {
+    return getDecryptedApiKey()
+  })
+
   ipcMain.handle('settings:getModel', async () => {
     const settings = await readSettings()
     return settings.model ?? 'gpt-4o-mini'
@@ -114,6 +120,10 @@ export function registerSettingsHandlers(): void {
     const settings = await readSettings()
     delete settings.geminiApiKeyEncrypted
     await writeSettings(settings)
+  })
+
+  ipcMain.handle('settings:revealGeminiKey', async () => {
+    return getDecryptedGeminiKey()
   })
 
   ipcMain.handle('settings:getGeminiModel', async () => {
