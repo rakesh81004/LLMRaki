@@ -48,6 +48,32 @@ under that env var runs it as plain Node with no GUI at all — always launch wi
 ```
 env -u ELECTRON_RUN_AS_NODE open /Applications/LLMRaki.app
 ```
+This env var also breaks `npm run dev` when run from this shell — `require('electron')`
+degrades to a plain string instead of the real module (`electron.app.isPackaged`
+throws `Cannot read properties of undefined`), which looks like a broken build but
+is purely this shell's inherited environment.
+
+## If the rebuilt app registers, then dies within ~1 second, on every launch
+
+This is macOS Gatekeeper/AMFI rejecting the ad-hoc-signed, unnotarized build — not
+a bug in the app. Confirm via the unified log around the launch time
+(`/usr/bin/log show --last 1m --predicate 'eventMessage contains "LLMRaki"'` —
+note `log` is a zsh builtin that shadows the real binary, so use the full path).
+The telltale line is `amfid: ... "The file is adhoc signed or signed by an unknown
+certificate chain"`. Fix, one-time per machine (requires an interactive terminal
+for the sudo password — hand this exact command to the user rather than trying to
+run it yourself in a non-interactive session):
+```
+sudo spctl developer-mode enable-terminal
+```
+After that, an existing `.app` bundle may still need a fresh ad-hoc signature to
+pick up the changed policy:
+```
+codesign --deep --force --sign - /Applications/LLMRaki.app
+```
+Do the standard quit → `npm run install:mac` → relaunch loop again afterward — this
+fix is about the *system's* willingness to run the binary at all, not about
+anything the build produced being wrong.
 
 ## What "verified" does NOT mean
 

@@ -69,6 +69,33 @@ logical file (e.g. a diff's "original" and "modified" sides), give them distinct
 URIs via a scheme prefix rather than a suffix, so the real extension stays at the
 end of the *modified* side's URI: `diff-baseline://<realPath>` not `<realPath>~base`.
 
+## A decoration with a collapsed (zero-width) range is silently skipped
+
+Any decoration whose range starts and ends at the same position (e.g.
+`new monaco.Range(line, col, line, col)` — the standard shape for a single-point
+annotation like inline blame text or a glyph-margin dot) is treated as "collapsed,"
+and Monaco's renderer drops it entirely **unless** `options.showIfCollapsed: true`
+is set. The call still succeeds and returns a normal-looking decoration id — there
+is no error, no warning, nothing to grep for. This produced a real bug (inline git
+blame text never appearing) that took extensive live inspection to trace, because
+every layer *looked* correct: the IPC data was right, `deltaDecorations` was
+called, the id came back valid. Whenever a decoration exists (confirmed via
+`model.getLineDecorations(line)`) but never paints, check this first.
+
+## A decoration change from outside Monaco's own event loop may need a forced render
+
+`deltaDecorations` genuinely registering a decoration on the model doesn't
+guarantee Monaco schedules a repaint for it, if the change was triggered by
+something Monaco didn't itself observe (a React state update reacting to an IPC
+event, not a keystroke or scroll it was already tracking). If a decoration exists
+on the model with the right options and still doesn't render even with
+`showIfCollapsed: true` set, call `editorInstance.render(true)` immediately after
+the `deltaDecorations` call — these two issues can present identically from the
+outside (decoration registered, options correct, nothing on screen) but come from
+unrelated root causes; verifying the model state first via `getLineDecorations` is
+what tells you which fix actually applies. See
+`REAL_DEBUGGER_IMPLEMENTATION_SKILL.md` for the full incident this was found in.
+
 ## Disabling semantic validation without a real project context
 
 Without a real `tsconfig`/`node_modules` to resolve against, every import and JSX

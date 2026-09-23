@@ -1,6 +1,6 @@
 # Efficient File Search + Chat UI Presentation for LLM Apps
 
-Extracted from building LLMRaki (a VS Code–style editor with a built-in AI chat).
+Extracted from building LLMRaki (a desktop code editor with a built-in AI chat).
 These are the patterns that actually mattered — not theory, things that fixed real
 bugs or noticeably improved the experience.
 

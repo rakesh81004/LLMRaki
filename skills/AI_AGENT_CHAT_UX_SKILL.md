@@ -70,6 +70,62 @@ mutating local git operations, runs automatically. `sudo` is worth gating
 defensively even if not explicitly requested — flag that choice to the user rather
 than silently deciding it for them.
 
+## A whole-file rewrite tool is the single biggest cause of bad agent edits
+
+If the *only* way an agent can change a file is "here is the complete new file
+content, overwrite it," every edit — even a one-line fix — requires the model to
+perfectly reproduce every unrelated line too. That's exactly where models drop
+code, truncate on longer files, or drift formatting, and it's the most likely
+explanation whenever an agent's edits are described as "bad" or "immature" on
+anything past a small file. Add a precise, targeted edit tool instead — an
+`edit_file(path, old_text, new_text)` that:
+- requires `old_text` to match the file's *current* content exactly, and to occur
+  exactly once (or ship a `replace_all` escape hatch for genuinely repeated text) —
+  ambiguous or non-matching input is a clean tool error the model can react to,
+  never a silent wrong-location edit;
+- only ever needs the model to reproduce the lines actually changing.
+
+Keep a full-file `write_file` too, for new files and genuine full-file rewrites,
+but make the targeted tool the *default* in the system prompt: "prefer edit_file
+for existing files; reserve write_file for a real full-file rewrite." Don't remove
+whole-file writes — some tasks (restructuring an entire file) are legitimately
+easier that way — just stop it from being the *only* option.
+
+## Read-before-write is a real safety rail, not busywork
+
+Nothing stops a model from calling a write/edit tool on a file it has only ever
+seen via a search-result snippet — it will happily guess at content it never
+actually read, especially under time/turn pressure. Track, per request, which
+absolute paths have actually been through a successful `read_file` call this
+conversation, and have `edit_file` (always) and `write_file` (only when the target
+already exists — a brand-new file has nothing to have read) refuse with a clear
+error if the path isn't in that set yet, telling the model to read it first. This
+mirrors a real coding assistant's own edit tool and catches the exact failure mode
+of "confidently overwriting a file based on what it looked like in a stale search
+snippet."
+
+## A one-line-per-file search result forces wasted round trips
+
+Returning only the *first* matching line per file from a search tool works for
+"does this file mention X at all," but forces a full separate `read_file` call
+before the model can tell whether a hit is actually the right one — burning turns
+and tool-call budget on files it may not even need. Return every matching line (up
+to a reasonable per-file cap, e.g. 8) instead of just the first — the model can
+usually judge relevance, and sometimes write a correct targeted edit, straight from
+the richer search result, without a preparatory read at all.
+
+## Encourage the agent to check its own work
+
+A system prompt that says "make the edit" and stops there gets an agent that edits
+and moves on, even when the edit could plausibly not compile. Add an explicit
+instruction: after a non-trivial code change, check for a typecheck/build/lint
+script (`package.json`'s `"scripts"`, or a `tsconfig.json`) and run it via the
+terminal tool before the final answer, fixing anything it reports the same way any
+other bug would be fixed. In testing, a well-prompted agent went further than asked
+— it wrote and ran its own quick assertion (`node -e "console.assert(...)"`) to
+confirm a bug fix actually worked, unprompted, once given permission to run
+terminal commands and told to verify non-trivial changes.
+
 ## Rate limits: retry with the server's own guidance, and show the wait
 
 When a provider returns a 429 with a `retryDelay`, parse and honor that value rather

@@ -19,9 +19,16 @@ read that one in addition to whichever task-specific file(s) below apply.
 | Anything touching the Monaco code editor directly — decorations, diff view, breadcrumbs/symbol outline, custom themes, `DiffEditor` vs `Editor` | `MONACO_EDITOR_INTEGRATION_SKILL.md` |
 | Needing git history/blame/log *as context* to answer a question or make a decision (not building a UI feature) | `GIT_HISTORY_LOOKUP_SKILL.md` |
 | Building/tuning the AI's own file-search or how search/read results are shown in chat | `EFFICIENT_FILE_SEARCH_AND_CHAT_UI.md` |
+| Adding or improving the coding agent's own tools (file edits, search, read/write) — as opposed to the surrounding chat UX around them | `AI_AGENT_CHAT_UX_SKILL.md` (has a tool-design section) |
+| Real breakpoint/step-through debugging (call stack, variables, stepping) for any language — as opposed to a "Run" feature that just shells out | `REAL_DEBUGGER_IMPLEMENTATION_SKILL.md` |
+| Verifying anything by actually driving the running app — real clicks/keystrokes, reproducing a bug, checking runtime state you can't get from reading code | `CDP_LIVE_TESTING_SKILL.md` |
 | **Every task**, after making a code change | `VERIFICATION_WORKFLOW_SKILL.md` |
+| **Every task** that produces UI copy or code comments | `PRODUCT_COPY_AND_COMMENT_TONE_SKILL.md` |
 
 If a task spans more than one row, read all the matching files — they're written to
 compose (e.g. "add a git blame feature" is `ELECTRON_IPC_FEATURE_SKILL.md` +
 `GIT_FEATURE_BUILDING_SKILL.md` + `MONACO_EDITOR_INTEGRATION_SKILL.md` +
+`VERIFICATION_WORKFLOW_SKILL.md`; "add real debugging" is
+`REAL_DEBUGGER_IMPLEMENTATION_SKILL.md` + `ELECTRON_IPC_FEATURE_SKILL.md` +
+`MONACO_EDITOR_INTEGRATION_SKILL.md` + `CDP_LIVE_TESTING_SKILL.md` to verify it +
 `VERIFICATION_WORKFLOW_SKILL.md`).
