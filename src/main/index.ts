@@ -13,6 +13,7 @@ import { registerGitHandlers } from './ipc/git'
 import { registerSearchHandlers } from './ipc/search'
 import { registerChatHistoryHandlers } from './ipc/chatHistory'
 import { registerFsWatchHandlers } from './ipc/fsWatch'
+import { registerNotificationHandlers } from './ipc/notifications'
 import { buildMenu } from './menu'
 import { createWindow } from './window'
 
@@ -36,6 +37,7 @@ app.whenReady().then(() => {
   registerSearchHandlers()
   registerChatHistoryHandlers()
   registerFsWatchHandlers()
+  registerNotificationHandlers()
   buildMenu()
 
   createWindow()

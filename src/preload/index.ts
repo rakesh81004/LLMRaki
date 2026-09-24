@@ -184,6 +184,9 @@ const api = {
   windowControl: {
     performRole: (role: string): Promise<void> => ipcRenderer.invoke('window:performRole', role)
   },
+  notifications: {
+    chatComplete: (): Promise<void> => ipcRenderer.invoke('notifications:chatComplete')
+  },
   fs: {
     openFolder: (): Promise<OpenFolderResult | null> => ipcRenderer.invoke('fs:openFolder'),
     openFolderAtPath: (folderPath: string): Promise<OpenFolderResult | null> =>

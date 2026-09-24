@@ -345,6 +345,7 @@ export default function ChatPanel({
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
   const [rateLimitWait, setRateLimitWait] = useState<number | null>(null)
   const requestIdRef = useRef<string | null>(null)
+  const cancelledRef = useRef(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const historyMenuRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -585,6 +586,7 @@ export default function ChatPanel({
 
     const requestId = makeId()
     requestIdRef.current = requestId
+    cancelledRef.current = false
 
     const offChunk = window.api.ai.onChunk(requestId, (chunk) => {
       setRateLimitWait(null)
@@ -602,6 +604,7 @@ export default function ChatPanel({
       setStreaming(false)
       cleanup()
       refreshConversationList()
+      if (!cancelledRef.current) window.api.notifications.chatComplete()
     })
     const offError = window.api.ai.onError(requestId, (message) => {
       setRateLimitWait(null)
@@ -612,6 +615,7 @@ export default function ChatPanel({
       setStreaming(false)
       cleanup()
       refreshConversationList()
+      if (!cancelledRef.current) window.api.notifications.chatComplete()
     })
     const offModelSwitched = window.api.ai.onModelSwitched(requestId, (switchedModel) => {
       setModelSwitchNotice(
@@ -719,6 +723,7 @@ export default function ChatPanel({
   }
 
   function handleCancel(): void {
+    cancelledRef.current = true
     if (requestIdRef.current) {
       if (provider === 'ollama') {
         window.api.ollama.cancel(requestIdRef.current)
