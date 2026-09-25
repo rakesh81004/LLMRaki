@@ -7,6 +7,7 @@ interface Props {
   fenceLang: string
   startLine: number
   filePath?: string | null
+  openLine?: number
   onOpenFile?: (path: string, line?: number) => void
 }
 
@@ -17,7 +18,14 @@ function toMonacoLanguage(fenceLang: string): string {
 }
 
 // Reuses Monaco's own tokenizer/theme so code in AI chat responses is colored exactly like viewing the file.
-export default function CodeBlock({ code, fenceLang, startLine, filePath, onOpenFile }: Props): JSX.Element {
+export default function CodeBlock({
+  code,
+  fenceLang,
+  startLine,
+  filePath,
+  openLine,
+  onOpenFile
+}: Props): JSX.Element {
   const [html, setHtml] = useState<string | null>(null)
   const language = toMonacoLanguage(fenceLang)
   const lines = code.split('\n')
@@ -41,8 +49,10 @@ export default function CodeBlock({ code, fenceLang, startLine, filePath, onOpen
   return (
     <div
       className={clickable ? 'code-block code-block-clickable' : 'code-block'}
-      title={clickable ? `Open ${filePath} at line ${startLine}` : undefined}
-      onClick={clickable ? () => onOpenFile!(filePath!, startLine) : undefined}
+      title={
+        clickable ? `Open ${filePath}${openLine ? ` at line ${openLine}` : ''}` : undefined
+      }
+      onClick={clickable ? () => onOpenFile!(filePath!, openLine) : undefined}
     >
       <div className="code-block-gutter" aria-hidden="true">
         {lines.map((_, i) => (

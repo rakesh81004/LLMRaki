@@ -110,10 +110,13 @@ export default function Markdown({ content, rootFolder, onOpenFile }: Props): JS
 
             const fenceLang = className.replace('language-', '')
 
-            // Only excerpts carrying a real LOC_START marker get a click-to-open — an example/
-            // hypothetical snippet has no marker, so a stale nearby file ref is never applied to it.
-            const fileRef = fromRealFile ? codeBlockFileRefs[fenceIndex] : null
+            // A code block that isn't a literal excerpt (no LOC_START) can still be clicked open —
+            // it's usually a usage example shown right after a `file:line` citation — but then the
+            // citation's own line (if it gave one) is the best guess for where to jump to, since the
+            // block's own gutter numbering (startLine) is synthetic in that case.
+            const fileRef = codeBlockFileRefs[fenceIndex]
             fenceIndex += 1
+            const openLine = fromRealFile ? startLine : fileRef?.line
 
             return (
               <pre>
@@ -122,6 +125,7 @@ export default function Markdown({ content, rootFolder, onOpenFile }: Props): JS
                   fenceLang={fenceLang}
                   startLine={startLine}
                   filePath={rootFolder && onOpenFile && fileRef ? joinPath(rootFolder, fileRef.path) : null}
+                  openLine={openLine}
                   onOpenFile={onOpenFile}
                 />
               </pre>
