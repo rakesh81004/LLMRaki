@@ -9,6 +9,14 @@ A desktop code editor with a built-in AI chat assistant, built with Electron + R
 - AI chat panel powered by the OpenAI Chat Completions API (streaming), with an option to include the currently open file as context
 - Settings panel to store your OpenAI API key (encrypted at rest via Electron's `safeStorage`, using your OS keychain) and pick a model
 
+## Screenshots
+
+![Screenshot 1](https://drive.google.com/thumbnail?id=1EzA3xyCWtnzzAQlTsgkyzxB-BkxmM11S&sz=w1600)
+
+![Screenshot 2](https://drive.google.com/thumbnail?id=1FexSyeuuP6sgnRFiW5lep5d-AKxjU2FC&sz=w1600)
+
+![Screenshot 3](https://drive.google.com/thumbnail?id=1UGZ7UMcjpCef_QxgeWvISzBii6RgxCYa&sz=w1600)
+
 ## Getting started
 
 ```bash
