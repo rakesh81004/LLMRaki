@@ -37,6 +37,30 @@ npm run build:mac   # produces a .dmg / .zip in dist/
 npm run build:win   # produces an NSIS installer in dist/ (run on Windows, or cross-build from macOS with Wine)
 ```
 
+## Browser extension
+
+`extension/` holds a Chrome extension (also works in Edge and other Chromium browsers) that brings LLMRaki's chat into a browser side panel. It runs on its own — the desktop app doesn't need to be open — and talks to OpenAI, Gemini, or a local Ollama model.
+
+- Streaming chat with Markdown rendering, saved chat history, and a Stop button
+- **Attach page**: sends your selected text, or the page's visible text if nothing is selected, along with the message. Off by default and resets after each message; the browser asks for permission the first time
+- Open it with the toolbar icon or `Ctrl+Shift+L` (`Cmd+Shift+L` on macOS)
+- **Attach files** with the paperclip, by dragging them onto the panel, or by pasting an image: PDF, Word (.docx), text, Markdown, CSV, JSON, HTML and code files are read as text; PNG, JPG, WebP and GIF images are sent for the model to look at. Up to 6 files per message
+- Three modes, switched below the message box:
+  - **Ask** — chat only; the page is never changed
+  - **Edit** — reads the page and fills in text fields, dropdowns, checkboxes and rich text editors directly, each with an Undo button. Every click waits for you to allow it
+  - **Auto** — fills in fields and clicks on its own, but still waits for you before any click that submits a form or sends, pays, buys, deletes or posts
+- In Edit and Auto, LLMRaki can also open a website or switch to one of your open tabs, so you can start from the New Tab page or another Chrome page it can't change. Auto does this on its own; Edit asks first. Websites open in the current tab only when it's a Chrome page — otherwise in a new tab, so your page is kept
+- In every mode, password and payment-card fields are never filled in by the assistant, and it asks you for missing details instead of making them up
+
+```bash
+npm run build:ext   # builds the extension into dist-extension/
+npm run dev:ext     # rebuilds on every change
+```
+
+To install it: open `chrome://extensions`, turn on **Developer mode**, click **Load unpacked**, and pick the `dist-extension` folder. After rebuilding, click the reload icon on the extension's card.
+
+The extension uses Gemini by default. The first time it opens, it walks you through getting a free API key from [Google AI Studio](https://aistudio.google.com/apikey) and checks the key before saving it. Free tiers have rate limits, so Groq and Mistral (both free, both support page actions) can be added as backups: when the main provider hits its limit, requests carry on with the next provider that has a key — mid-task too — and LLMRaki only waits when all of them are limited. Keys come from [Google AI Studio](https://aistudio.google.com/apikey), the [Groq console](https://console.groq.com/keys) and the [Mistral console](https://console.mistral.ai/api-keys). OpenAI and Ollama can be picked in Settings instead. API keys are kept in the browser profile's extension storage, separate from the desktop app. To use Ollama from the extension, Ollama must accept requests from extensions: set the environment variable `OLLAMA_ORIGINS=chrome-extension://*` and restart Ollama.
+
 ## Notes
 
 - The API key never leaves your machine except in direct requests to `api.openai.com`.

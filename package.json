@@ -12,7 +12,9 @@
     "build:mac": "electron-vite build && electron-builder --mac",
     "build:win": "electron-vite build && electron-builder --win",
     "install:mac": "bash scripts/install-mac.sh",
-    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json"
+    "dev:ext": "vite build --watch --config extension/vite.config.ts",
+    "build:ext": "vite build --config extension/vite.config.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p extension/tsconfig.json"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.6.0",
@@ -32,6 +34,7 @@
     "@electron-toolkit/preload": "^3.0.1",
     "@electron-toolkit/tsconfig": "^1.0.1",
     "@electron-toolkit/utils": "^3.0.0",
+    "@types/chrome": "^0.3.4",
     "@types/node": "^22.10.5",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
@@ -40,6 +43,8 @@
     "electron": "^33.3.1",
     "electron-builder": "^25.1.8",
     "electron-vite": "^2.3.0",
+    "fflate": "^0.8.3",
+    "pdfjs-dist": "^6.4.299",
     "typescript": "^5.7.2",
     "vite": "^5.4.11"
   },

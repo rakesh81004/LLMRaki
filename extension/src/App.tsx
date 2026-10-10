@@ -1,0 +1,812 @@
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import Markdown from './Markdown'
+import { HistoryIcon, PaperclipIcon, PlusIcon, SettingsIcon } from './Icons'
+import { PendingChips, SentAttachments, type PendingFile } from './AttachmentChips'
+import { ACCEPT, MAX_FILES, readAttachment } from './attachments'
+import { restartExtension, updateWaiting } from './updates'
+import SettingsView from './SettingsView'
+import HistoryView from './HistoryView'
+import StepList from './StepList'
+import { runAgent, undoFill } from './agent'
+import GeminiSetup from './GeminiSetup'
+import { APPROVAL_PREFIX, clearApprovalNotification, notify, plainText, playSound, type AlertKind } from './alerts'
+import { activeModel, listOllamaModels, PROVIDER_LABELS } from './providers'
+import { providerChain, streamChat, type RateLimitHooks } from './llm'
+import type { LimitReason } from './limits'
+import {
+  getTargetTab,
+  hasPageAccess,
+  readActivePage,
+  requestPageAccess
+} from './pageContext'
+import type { TabTarget } from './pageContext'
+import { deleteConversation, loadConversations, loadSettings, saveConversation, saveSettings } from './storage'
+import type { AgentStep, ChatMessage, Conversation, Mode, PageContext, Settings } from './types'
+
+type View = 'chat' | 'history' | 'settings' | 'setup' | 'backups'
+
+const SUGGESTIONS = [
+  'Summarize this page',
+  'What are the key takeaways here?',
+  'Explain the selected text in simple terms'
+]
+
+const AGENT_SUGGESTIONS = [
+  'Fill in this form with: ',
+  'Search this site for ',
+  'Read this page and list what I can do here'
+]
+
+const MODE_LABELS: Record<Mode, string> = { ask: 'Ask', edit: 'Edit', auto: 'Auto' }
+
+const MODE_HINTS: Record<Mode, string> = {
+  ask: 'Ask: chat only — the page is never changed',
+  edit: 'Edit: reads the page and fills in fields directly (with undo); asks before every click',
+  auto: 'Auto: fills in fields and clicks on its own; still asks before submitting, sending, paying or deleting'
+}
+
+const EMPTY_TEXT: Record<Mode, string> = {
+  ask: "Ask anything, or attach the page you're reading.",
+  edit: 'Describe what to fill in. You approve every click.',
+  auto: 'Describe the task. LLMRaki fills and clicks, and checks with you before anything final.'
+}
+
+// Same mode colours as the desktop app's chat.
+const MODE_RGB: Record<Mode, string> = {
+  ask: '52, 211, 153',
+  edit: '168, 85, 247',
+  auto: '255, 140, 0'
+}
+
+function newConversation(): Conversation {
+  const now = Date.now()
+  return { id: crypto.randomUUID(), title: 'New chat', createdAt: now, updatedAt: now, messages: [] }
+}
+
+function titleFrom(text: string): string {
+  const line = text.trim().split('\n')[0]
+  return line.length > 60 ? `${line.slice(0, 57)}…` : line || 'New chat'
+}
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname || url
+  } catch {
+    return url
+  }
+}
+
+export default function App(): JSX.Element {
+  const [settings, setSettings] = useState<Settings | null>(null)
+  const [conversations, setConversations] = useState<Conversation[]>([])
+  const [conversation, setConversation] = useState<Conversation>(newConversation)
+  const [view, setView] = useState<View>('chat')
+  const [input, setInput] = useState('')
+  const [files, setFiles] = useState<PendingFile[]>([])
+  const [dragging, setDragging] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const [attachPage, setAttachPage] = useState(false)
+  const [activeTab, setActiveTab] = useState<TabTarget | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+  const [streaming, setStreaming] = useState(false)
+
+  const abortRef = useRef<AbortController | null>(null)
+  const approvalsRef = useRef(new Map<string, (allowed: boolean) => void>())
+  // When a rate-limit pause ends; drives the countdown shown in the reply being written.
+  const [waitUntil, setWaitUntil] = useState<number | null>(null)
+  const [waitReason, setWaitReason] = useState<LimitReason>('rate')
+  const [, setTick] = useState(0)
+  useEffect(() => {
+    if (waitUntil === null) return
+    const timer = setInterval(() => setTick((t) => t + 1), 1000)
+    return () => clearInterval(timer)
+  }, [waitUntil])
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const stickToBottomRef = useRef(true)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  useEffect(() => {
+    void loadSettings().then(async (loaded) => {
+      let s = loaded
+      // Older installs defaulted to Ollama. If nobody picked it on purpose and it isn't running, move to Gemini.
+      if (!s.providerChosen && s.provider === 'ollama' && (await listOllamaModels()).length === 0) {
+        s = { ...s, provider: 'gemini' }
+        void saveSettings(s)
+      }
+      setSettings(s)
+      if (s.provider === 'gemini' && !s.geminiKey) setView('setup')
+      else if (
+        (s.provider === 'openai' && !s.openaiKey) ||
+        (s.provider === 'groq' && !s.groqKey) ||
+        (s.provider === 'mistral' && !s.mistralKey)
+      ) {
+        setView('settings')
+      }
+    })
+    void loadConversations().then(setConversations)
+  }, [])
+
+  // A newer build on disk than the one Chrome is running: restart straight away when the panel
+  // opens (nothing is in progress yet); while it stays open, offer a restart instead of interrupting.
+  const [updateReady, setUpdateReady] = useState(false)
+  useEffect(() => {
+    void updateWaiting().then((waiting) => {
+      if (waiting) restartExtension()
+    })
+    const timer = setInterval(() => void updateWaiting().then(setUpdateReady), 30_000)
+    return () => clearInterval(timer)
+  }, [])
+
+  // Keep the composer naming whichever tab LLMRaki would read or act on right now, and whether it can.
+  // Only needed for the Page button's tooltip; Edit and Auto check the tab when a message is sent.
+  const watchTab = attachPage
+  useEffect(() => {
+    if (!watchTab) return
+    const refresh = (): void =>
+      void getTargetTab()
+        .then(setActiveTab)
+        .catch(() => setActiveTab(null))
+    refresh()
+    chrome.tabs.onActivated.addListener(refresh)
+    chrome.tabs.onUpdated.addListener(refresh)
+    chrome.windows.onFocusChanged.addListener(refresh)
+    return () => {
+      chrome.tabs.onActivated.removeListener(refresh)
+      chrome.tabs.onUpdated.removeListener(refresh)
+      chrome.windows.onFocusChanged.removeListener(refresh)
+    }
+  }, [watchTab])
+
+  useLayoutEffect(() => {
+    const el = scrollRef.current
+    if (el && stickToBottomRef.current) el.scrollTop = el.scrollHeight
+  }, [conversation.messages])
+
+  useLayoutEffect(() => {
+    const el = textareaRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${Math.min(el.scrollHeight, 200)}px`
+  }, [input])
+
+  const onScroll = (): void => {
+    const el = scrollRef.current
+    if (el) stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
+  }
+
+  const enablePageAttach = (): void => {
+    // Ask synchronously inside the click so the browser treats it as user-initiated.
+    void requestPageAccess().then((granted) => {
+      setAttachPage(granted)
+      setNotice(granted ? null : 'Page reading was not allowed, so the page won\'t be attached.')
+    })
+  }
+
+  const togglePageAttach = (): void => {
+    if (attachPage) setAttachPage(false)
+    else enablePageAttach()
+  }
+
+  // Sound and a system notification, each as the user has set them in Settings.
+  const alertUser = (kind: AlertKind, title: string, message: string, options: { stepId?: string; context?: string } = {}): void => {
+    if (!settings) return
+    if (settings.sound) playSound(kind)
+    if (settings.notifications) notify(kind, title, message, options)
+  }
+
+  const send = useCallback(
+    async (text: string) => {
+      const ready = files.filter((f) => f.status === 'ready' && f.attachment).map((f) => f.attachment!)
+      if (!settings || streaming || (!text.trim() && ready.length === 0)) return
+      if (files.some((f) => f.status === 'reading')) {
+        setNotice('Still reading your files — send again in a moment.')
+        return
+      }
+      setNotice(null)
+
+      let page: PageContext | undefined
+      if (attachPage) {
+        try {
+          page = await readActivePage()
+        } catch (err) {
+          setNotice(err instanceof Error ? err.message : String(err))
+          return
+        }
+      }
+
+      const mode = settings.mode
+      // Edit and Auto start on the tab that was in front when the message was sent, even if the user
+      // switches tabs mid-run. From a browser page (New Tab, Settings…) they get to a website themselves.
+      let tabId: number | undefined
+      let startProblem: string | undefined
+      if (mode !== 'ask') {
+        const target = await getTargetTab().catch(
+          (err): TabTarget => ({ title: 'This tab', problem: `Couldn't check this tab: ${err instanceof Error ? err.message : String(err)}` })
+        )
+        setActiveTab(target)
+        if ((target.problem && !target.browserPage) || !target.tabId) {
+          setNotice(target.problem ?? 'No tab to work on.')
+          return
+        }
+        if (target.browserPage) startProblem = target.url ? `it's ${target.url.split(/[?#]/)[0]}` : "it's a Chrome page such as New Tab"
+        if (!(await hasPageAccess())) {
+          setNotice('Edit and Auto need permission to read and change pages. Turn on “Reading web pages” in Settings.')
+          return
+        }
+        tabId = target.tabId
+      }
+
+      const userMessage: ChatMessage = {
+        role: 'user',
+        content: text.trim() || `Please look at the attached file${ready.length === 1 ? '' : 's'}.`,
+        mode,
+        ...(page ? { page } : {}),
+        ...(ready.length ? { attachments: ready } : {})
+      }
+      const history = [...conversation.messages, userMessage]
+      const pending: ChatMessage = { role: 'assistant', content: '', mode, ...(mode !== 'ask' ? { steps: [] } : {}) }
+      const base: Conversation = {
+        ...conversation,
+        title: conversation.messages.length === 0 ? titleFrom(text) : conversation.title,
+        updatedAt: Date.now(),
+        messages: [...history, pending]
+      }
+      setConversation(base)
+      setInput('')
+      setFiles([])
+      setAttachPage(false)
+      setStreaming(true)
+      stickToBottomRef.current = true
+
+      const controller = new AbortController()
+      abortRef.current = controller
+      let reply = ''
+      let failed = false
+      let errorText = ''
+      const steps: AgentStep[] = []
+
+      let note: string | undefined
+      const show = (content: string, error = false): void => {
+        setWaitUntil(null)
+        setConversation((c) =>
+          c.id === base.id
+            ? {
+                ...c,
+                messages: [
+                  ...history,
+                  {
+                    ...pending,
+                    content,
+                    ...(steps.length ? { steps: [...steps] } : {}),
+                    ...(error ? { error } : {}),
+                    ...(note ? { note } : {})
+                  }
+                ]
+              }
+            : c
+        )
+      }
+      // Which backups ended up answering (when the main provider was at its limit), for the note under the reply.
+      const backups = new Set<string>()
+      const rateLimit: RateLimitHooks = {
+        onWait: (seconds, reason) => {
+          setWaitReason(reason)
+          setWaitUntil(Date.now() + seconds * 1000)
+        },
+        onAnswer: (provider, model) => {
+          if (provider === settings.provider && model === activeModel(settings)) return
+          backups.add(provider === settings.provider ? model : `${PROVIDER_LABELS[provider]} (${model})`)
+          note = `Answered by ${[...backups].join(', ')} — ${activeModel(settings)} was busy or at its free limit.`
+        }
+      }
+
+      try {
+        if (mode === 'ask') {
+          for await (const chunk of streamChat(settings, history, controller.signal, rateLimit)) {
+            reply += chunk
+            show(reply)
+          }
+        } else {
+          reply = await runAgent(settings, mode, history, tabId!, controller.signal, {
+            onStep: (step) => {
+              const i = steps.findIndex((s) => s.id === step.id)
+              if (i === -1) steps.push(step)
+              else steps[i] = step
+              show(reply)
+            },
+            requestApproval: (step) =>
+              new Promise<boolean>((resolve) => {
+                if (controller.signal.aborted) return resolve(false)
+                approvalsRef.current.set(step.id, resolve)
+                alertUser('approval', 'LLMRaki needs your OK', `${step.label}${step.detail ? ` — ${step.detail}` : ''}`, {
+                  stepId: step.id,
+                  context: 'Allow or Deny here, or in the side panel'
+                })
+              }),
+            rateLimit
+          }, startProblem)
+        }
+      } catch (err) {
+        if (!controller.signal.aborted) {
+          failed = true
+          errorText = err instanceof Error ? err.message : String(err)
+          show(errorText, true)
+        }
+      } finally {
+        abortRef.current = null
+        setStreaming(false)
+        setWaitUntil(null)
+      }
+
+      if (controller.signal.aborted && !reply) reply = '_Stopped._'
+      if (!failed) show(reply)
+
+      // Let the user know the run is over — unless they stopped it themselves.
+      if (!controller.signal.aborted) {
+        const actions = steps.filter((s) => s.status === 'done' && s.kind !== 'read').length
+        if (failed) {
+          alertUser('error', 'LLMRaki stopped', errorText.split('\n')[0])
+        } else {
+          const summary = plainText(reply) || 'Done.'
+          alertUser(
+            'done',
+            mode === 'ask' ? 'LLMRaki replied' : 'LLMRaki finished the task',
+            summary,
+            mode === 'ask' ? {} : { context: `${actions} page action${actions === 1 ? '' : 's'} done` }
+          )
+        }
+      }
+
+      // A failed turn stays on screen but only its completed page actions are saved — the history
+      // shouldn't fill with error text, yet later turns still need to know what was changed.
+      const saved: ChatMessage = failed
+        ? { ...pending, content: '', steps: [...steps] }
+        : { ...pending, content: reply, ...(steps.length ? { steps: [...steps] } : {}), ...(note ? { note } : {}) }
+      const keep = !failed || steps.length > 0
+      const toSave: Conversation = { ...base, updatedAt: Date.now(), messages: keep ? [...history, saved] : history }
+      setConversations(await saveConversation(toSave))
+    },
+    [settings, streaming, attachPage, conversation, files]
+  )
+
+  // Reads each file into an attachment in the background; chips show progress and any problem.
+  const addFiles = (incoming: File[]): void => {
+    if (incoming.length === 0) return
+    const room = MAX_FILES - files.length
+    if (room <= 0) {
+      setNotice(`Up to ${MAX_FILES} files can be attached to one message.`)
+      return
+    }
+    if (incoming.length > room) setNotice(`Only the first ${room} file${room === 1 ? '' : 's'} were attached (up to ${MAX_FILES} per message).`)
+    for (const file of incoming.slice(0, room)) {
+      const id = crypto.randomUUID()
+      setFiles((list) => [...list, { id, name: file.name || 'pasted image', size: file.size, status: 'reading' }])
+      void readAttachment(file).then(
+        (attachment) => setFiles((list) => list.map((f) => (f.id === id ? { ...f, status: 'ready', attachment } : f))),
+        (err) =>
+          setFiles((list) =>
+            list.map((f) => (f.id === id ? { ...f, status: 'error', error: err instanceof Error ? err.message : String(err) } : f))
+          )
+      )
+    }
+  }
+
+  const fileErrors = files.filter((f) => f.status === 'error')
+
+  const stop = (): void => {
+    abortRef.current?.abort()
+    for (const [stepId, resolve] of approvalsRef.current) {
+      resolve(false)
+      clearApprovalNotification(stepId)
+    }
+    approvalsRef.current.clear()
+  }
+
+  const answerApproval = (stepId: string, allowed: boolean): void => {
+    approvalsRef.current.get(stepId)?.(allowed)
+    approvalsRef.current.delete(stepId)
+    clearApprovalNotification(stepId)
+  }
+
+  // Allow / Deny can be answered straight from the notification; clicking one brings Chrome to the front.
+  useEffect(() => {
+    if (!chrome.notifications) return
+    const onButton = (id: string, buttonIndex: number): void => {
+      if (!id.startsWith(APPROVAL_PREFIX)) return
+      const stepId = id.slice(APPROVAL_PREFIX.length)
+      approvalsRef.current.get(stepId)?.(buttonIndex === 0)
+      approvalsRef.current.delete(stepId)
+      void chrome.notifications.clear(id)
+    }
+    const onClick = (id: string): void => {
+      if (!id.startsWith('llmraki-')) return
+      void chrome.windows.getCurrent().then((w) => {
+        if (w.id !== undefined) void chrome.windows.update(w.id, { focused: true })
+      })
+      if (!id.startsWith(APPROVAL_PREFIX)) void chrome.notifications.clear(id)
+    }
+    chrome.notifications.onButtonClicked.addListener(onButton)
+    chrome.notifications.onClicked.addListener(onClick)
+    return () => {
+      chrome.notifications.onButtonClicked.removeListener(onButton)
+      chrome.notifications.onClicked.removeListener(onClick)
+    }
+  }, [])
+
+  const undoStep = async (messageIndex: number, step: AgentStep): Promise<void> => {
+    if (!(await undoFill(step))) {
+      setNotice("Couldn't undo that change — the page may have changed since.")
+      return
+    }
+    const next: Conversation = {
+      ...conversation,
+      messages: conversation.messages.map((m, i) =>
+        i === messageIndex && m.steps
+          ? { ...m, steps: m.steps.map((s) => (s.id === step.id ? { ...s, status: 'undone' as const, undo: undefined } : s)) }
+          : m
+      )
+    }
+    setConversation(next)
+    setConversations(await saveConversation(next))
+  }
+
+  const changeMode = (mode: Mode): void => {
+    if (!settings || mode === settings.mode) return
+    const apply = (): void => {
+      const next = { ...settings, mode }
+      setSettings(next)
+      void saveSettings(next)
+      setNotice(null)
+    }
+    if (mode === 'ask') return apply()
+    // Requested inside the click so the browser shows its permission prompt.
+    void requestPageAccess().then((granted) => {
+      if (granted) apply()
+      else setNotice('Edit and Auto need permission to read and change pages, so the mode was not changed.')
+    })
+  }
+
+  const startNewChat = (): void => {
+    stop()
+    setConversation(newConversation())
+    setView('chat')
+    setNotice(null)
+    textareaRef.current?.focus()
+  }
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>): void => {
+    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+      e.preventDefault()
+      void send(input)
+    }
+  }
+
+  const applySuggestion = (text: string): void => {
+    setInput(text)
+    if (settings?.mode === 'ask' && !attachPage) enablePageAttach()
+    textareaRef.current?.focus()
+  }
+
+  if (!settings) return <div className="app" />
+
+  if (view === 'setup' || view === 'backups') {
+    return (
+      <div className="app">
+        <GeminiSetup
+          settings={settings}
+          backupsOnly={view === 'backups'}
+          onOtherProvider={() => setView('settings')}
+          onDone={(next) => {
+            setSettings(next)
+            void saveSettings(next)
+            setNotice(null)
+            setView('chat')
+          }}
+        />
+      </div>
+    )
+  }
+
+  if (view === 'settings') {
+    return (
+      <div className="app">
+        <SettingsView
+          settings={settings}
+          onClose={() => setView('chat')}
+          onSave={(next) => {
+            const chosen = { ...next, providerChosen: true }
+            setSettings(chosen)
+            void saveSettings(chosen)
+            setView('chat')
+          }}
+        />
+      </div>
+    )
+  }
+
+  if (view === 'history') {
+    return (
+      <div className="app">
+        <HistoryView
+          conversations={conversations}
+          activeId={conversation.id}
+          onClose={() => setView('chat')}
+          onOpen={(c) => {
+            stop()
+            setConversation(c)
+            setView('chat')
+          }}
+          onDelete={(id) => {
+            void deleteConversation(id).then(setConversations)
+            if (id === conversation.id) setConversation(newConversation())
+          }}
+        />
+      </div>
+    )
+  }
+
+  const empty = conversation.messages.length === 0
+  const agentMode = settings.mode !== 'ask'
+
+  return (
+    <div
+      className="app"
+      data-mode={settings.mode}
+      onDragOver={(e) => {
+        if (!e.dataTransfer.types.includes('Files')) return
+        e.preventDefault()
+        setDragging(true)
+      }}
+      onDragLeave={(e) => {
+        if (e.currentTarget === e.target || !e.currentTarget.contains(e.relatedTarget as Node)) setDragging(false)
+      }}
+      onDrop={(e) => {
+        if (!e.dataTransfer.files.length) return
+        e.preventDefault()
+        setDragging(false)
+        addFiles(Array.from(e.dataTransfer.files))
+      }}
+    >
+      {dragging && <div className="drop-overlay">Drop files to attach them</div>}
+      <header className="topbar">
+        <img src="icons/icon32.png" alt="" className="topbar-logo" />
+        <span className="topbar-title" title={conversation.title}>
+          {empty ? 'LLMRaki' : conversation.title}
+        </span>
+        <button className="icon-button" title="New chat" onClick={startNewChat}>
+          <PlusIcon />
+        </button>
+        <button className="icon-button" title="Chat history" onClick={() => setView('history')}>
+          <HistoryIcon />
+        </button>
+        <button className="icon-button" title="Settings" onClick={() => setView('settings')}>
+          <SettingsIcon />
+        </button>
+      </header>
+
+      <div className="messages" ref={scrollRef} onScroll={onScroll}>
+        {empty ? (
+          <div className="empty-state">
+            <img src="icons/icon128.png" alt="" />
+            <p>{EMPTY_TEXT[settings.mode]}</p>
+            {providerChain(settings).length === 1 && settings.provider !== 'ollama' && (
+              <button className="backup-nudge" onClick={() => setView('backups')}>
+                <strong>Add free backups</strong> — Groq and Mistral take over when {PROVIDER_LABELS[settings.provider]} hits
+                its free limit, so LLMRaki doesn't stop.
+              </button>
+            )}
+            <div className="suggestions">
+              {(agentMode ? AGENT_SUGGESTIONS : SUGGESTIONS).map((s) => (
+                <button key={s} className="suggestion" onClick={() => applySuggestion(s)}>
+                  {s}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : (
+          conversation.messages.map((m, i) => (
+            <div
+              key={i}
+              className={`message ${m.role}${m.error ? ' error' : ''}`}
+              style={m.mode ? ({ '--msg-mode-rgb': MODE_RGB[m.mode] } as React.CSSProperties) : undefined}
+            >
+              {m.page && (
+                <a className="page-chip" href={m.page.url} target="_blank" rel="noreferrer" title={m.page.url}>
+                  {m.page.kind === 'selection' ? 'Selection from ' : ''}
+                  {m.page.title}
+                  <span className="page-chip-host">{hostOf(m.page.url)}</span>
+                </a>
+              )}
+              {m.steps && m.steps.length > 0 && (
+                <StepList
+                  steps={m.steps}
+                  onAnswer={answerApproval}
+                  onUndo={(step) => void undoStep(i, step)}
+                />
+              )}
+              {m.role === 'user' ? (
+                <>
+                  {m.attachments && m.attachments.length > 0 && <SentAttachments attachments={m.attachments} />}
+                  <div className="user-text">{m.content}</div>
+                </>
+              ) : m.content ? (
+                m.error ? (
+                  <div>
+                    {m.content}
+                    {/key|ollama|provider|settings/i.test(m.content) && (
+                      <div className="error-actions">
+                        <button
+                          className="ghost-button small"
+                          onClick={() => setView(settings.provider === 'gemini' && !settings.geminiKey ? 'setup' : 'settings')}
+                        >
+                          Open Settings
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <Markdown content={m.content} />
+                )
+              ) : streaming && i === conversation.messages.length - 1 && waitUntil === null ? (
+                <div className="thinking">
+                  <span />
+                  <span />
+                  <span />
+                </div>
+              ) : null}
+              {streaming && waitUntil !== null && i === conversation.messages.length - 1 && (
+                <div className="rate-wait" role="status">
+                  {waitReason === 'busy'
+                    ? providerChain(settings).length > 1
+                      ? 'Your AI providers are overloaded right now (a temporary problem on their side).'
+                      : `${PROVIDER_LABELS[settings.provider]} is overloaded right now (a temporary problem on Google's side).`
+                    : providerChain(settings).length > 1
+                      ? 'Every AI provider you set up is at its free limit for the moment.'
+                      : `${PROVIDER_LABELS[settings.provider]}'s free limit for this minute is used up.`}{' '}
+                  {waitReason === 'busy' ? 'Retrying' : 'Continuing'} automatically in{' '}
+                  <strong>{Math.max(0, Math.ceil((waitUntil - Date.now()) / 1000))}s</strong> — your task carries on from where it stopped.
+                  {providerChain(settings).length === 1 && (
+                    <div className="rate-wait-tip">
+                      Add free Groq or Mistral keys in{' '}
+                      <button className="link-button" onClick={() => setView('settings')}>
+                        Settings
+                      </button>{' '}
+                      and LLMRaki switches to them instead of waiting.
+                    </div>
+                  )}
+                </div>
+              )}
+              {m.note && <div className="message-note">{m.note}</div>}
+            </div>
+          ))
+        )}
+      </div>
+
+      {updateReady && !streaming && (
+        <div className="update-banner" role="status">
+          A new version of LLMRaki is ready.
+          <button className="primary-button small" onClick={restartExtension}>
+            Restart to update
+          </button>
+        </div>
+      )}
+
+      {notice && (
+        <div className="notice" role="status">
+          {notice}
+          <button className="link-button" onClick={() => setNotice(null)}>
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      {fileErrors.length > 0 && (
+        <div className="notice" role="status">
+          {fileErrors[0].error}
+          <button className="link-button" onClick={() => setFiles((list) => list.filter((f) => f.status !== 'error'))}>
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      <div className="composer">
+        {files.length > 0 && (
+          <PendingChips files={files} onRemove={(id) => setFiles((list) => list.filter((f) => f.id !== id))} />
+        )}
+        <textarea
+          ref={textareaRef}
+          value={input}
+          rows={1}
+          autoFocus
+          placeholder={
+            agentMode
+              ? 'Tell LLMRaki what to do on this page…'
+              : attachPage
+                ? 'Ask about this page…'
+                : files.length > 0
+                  ? 'Ask about the attached files…'
+                  : 'Message LLMRaki…'
+          }
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={onKeyDown}
+          onPaste={(e) => {
+            // Pasting a screenshot or a copied file attaches it instead of pasting nothing.
+            const pasted = Array.from(e.clipboardData.files)
+            if (pasted.length > 0) {
+              e.preventDefault()
+              addFiles(pasted)
+            }
+          }}
+        />
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          accept={ACCEPT}
+          hidden
+          onChange={(e) => {
+            addFiles(Array.from(e.target.files ?? []))
+            e.target.value = ''
+          }}
+        />
+        <div className="composer-bar">
+          <button
+            className="icon-button attach-button"
+            title="Attach files — PDF, Word, text, code or images (or drag them here / paste an image)"
+            aria-label="Attach files"
+            onClick={() => fileInputRef.current?.click()}
+          >
+            <PaperclipIcon />
+          </button>
+          <div className="mode-row" role="radiogroup" aria-label="Mode">
+            {(['ask', 'edit', 'auto'] as Mode[]).map((m) => (
+              <button
+                key={m}
+                role="radio"
+                aria-checked={settings.mode === m}
+                className={`mode-button${settings.mode === m ? ' active' : ''}`}
+                data-mode={m}
+                disabled={streaming}
+                title={MODE_HINTS[m]}
+                onClick={() => changeMode(m)}
+              >
+                {MODE_LABELS[m]}
+              </button>
+            ))}
+          </div>
+          {!agentMode && (
+            <button
+              className={`attach-toggle${attachPage ? ' on' : ''}`}
+              onClick={togglePageAttach}
+              title={
+                attachPage
+                  ? `Attaching ${activeTab?.title ? `“${activeTab.title}”` : 'the current page'} — click to stop`
+                  : 'Attach the current page (or your selected text) to this message'
+              }
+            >
+              <span className="attach-dot" />
+              <span className="attach-label">Page</span>
+            </button>
+          )}
+          <button className="model-label" title="Change provider or model" onClick={() => setView('settings')}>
+            {PROVIDER_LABELS[settings.provider]} · {activeModel(settings)}
+          </button>
+          {streaming ? (
+            <button className="send-button stop" onClick={stop} title="Stop">
+              ■
+            </button>
+          ) : (
+            <button
+              className="send-button"
+              onClick={() => void send(input)}
+              disabled={!input.trim() && !files.some((f) => f.status === 'ready')}
+              title="Send (Enter)"
+            >
+              ↑
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
