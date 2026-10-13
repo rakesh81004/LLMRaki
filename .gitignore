@@ -5,3 +5,6 @@ dist-electron
 .DS_Store
 *.log
 dist-extension
+
+# Automation media (résumés and other personal files) stays on this machine
+automations/*/media/

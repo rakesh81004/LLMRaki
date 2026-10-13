@@ -38,9 +38,13 @@ function formatAttachments(attachments: Attachment[]): string {
 
 function describeSteps(steps: AgentStep[]): string {
   const done = steps
-    .filter((s) => s.kind !== 'read')
+    .filter((s) => s.kind !== 'read' && s.kind !== 'message')
     .map((s) => `${s.label}${s.detail ? ` (${s.detail})` : ''}: ${s.status}`)
-  return done.length > 0 ? `\n\n[Page actions in this turn — ${done.join('; ')}]` : ''
+  const added = steps.filter((s) => s.kind === 'message').map((s) => `“${s.label}”`)
+  return (
+    (added.length > 0 ? `\n\n[The user added during this task: ${added.join('; ')}]` : '') +
+    (done.length > 0 ? `\n\n[Page actions in this turn — ${done.join('; ')}]` : '')
+  )
 }
 
 function formatPage(page: PageContext): string {

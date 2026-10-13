@@ -25,6 +25,27 @@ export interface Settings {
   // Alerts when LLMRaki needs an Allow/Deny, finishes, or stops on an error.
   sound: boolean
   notifications: boolean
+  // About the user, for applications and forms: free-text details plus the text of their résumé.
+  profileText: string
+  resume?: { name: string; size: number; text: string }
+  // Sites where Auto mode may submit, apply or send without asking (e.g. "naukri.com"). Off by default.
+  autoApproveSites: string[]
+  // Put the tabs LLMRaki works on into a coloured "LLMRaki" tab group.
+  groupTabs: boolean
+  // When a task stops at the step limit, carry on with it automatically after a short countdown.
+  autoContinue: boolean
+  // The user's own skills (task playbooks), next to the built-in ones.
+  customSkills: { name: string; description: string; instructions: string }[]
+  // The user's own automations (instructions + media files), next to the built-in ones.
+  customAutomations: {
+    name: string
+    title: string
+    trigger: string
+    mode: Mode
+    description: string
+    instructions: string
+    media: Attachment[]
+  }[]
 }
 
 // Gemini by default: it needs only a free key, while Ollama has to be installed and running locally.
@@ -43,7 +64,13 @@ export const DEFAULT_SETTINGS: Settings = {
   ollamaModel: 'llama3.2',
   fallback: true,
   sound: true,
-  notifications: true
+  notifications: true,
+  profileText: '',
+  autoApproveSites: [],
+  groupTabs: true,
+  autoContinue: true,
+  customSkills: [],
+  customAutomations: []
 }
 
 export interface PageContext {
@@ -57,13 +84,16 @@ export interface PageContext {
 
 export interface AgentStep {
   id: string
-  kind: 'read' | 'fill' | 'click' | 'navigate'
+  // 'message': something the user sent while the task was running, read by LLMRaki mid-task.
+  kind: 'read' | 'fill' | 'click' | 'navigate' | 'message' | 'skill' | 'memory'
   label: string
   detail?: string
   status: 'running' | 'awaiting' | 'done' | 'denied' | 'failed' | 'undone'
   error?: string
   // Enough to put a filled field back the way it was.
   undo?: { tabId: number; ref: string; value: string }
+  // Buttons for a step that waits on the user; Allow / Deny when not set.
+  choices?: string[]
 }
 
 // A file attached to a message: documents are kept as their extracted text, images as base64 JPEG.

@@ -347,7 +347,8 @@ export interface ToolResult {
 export type Turn =
   | { role: 'user'; text: string; images?: WireImage[] }
   | { role: 'assistant'; text: string; calls: ToolCall[]; gemini?: { model: string; parts: Record<string, unknown>[] } }
-  | { role: 'tool'; results: ToolResult[] }
+  // userNote: messages the user sent while the run was going, read by the model at its next step.
+  | { role: 'tool'; results: ToolResult[]; userNote?: string }
 
 export interface ToolDef {
   name: string
@@ -413,13 +414,16 @@ function geminiContents(turns: Turn[], model: string): Record<string, unknown>[]
     if (t.role === 'tool') {
       return {
         role: 'user',
-        parts: t.results.map((r) => ({
-          functionResponse: {
-            ...(r.call.providerId ? { id: r.call.providerId } : {}),
-            name: r.call.name,
-            response: { result: r.output }
-          }
-        }))
+        parts: [
+          ...t.results.map((r) => ({
+            functionResponse: {
+              ...(r.call.providerId ? { id: r.call.providerId } : {}),
+              name: r.call.name,
+              response: { result: r.output }
+            }
+          })),
+          ...(t.userNote ? [{ text: t.userNote }] : [])
+        ]
       }
     }
     if (t.gemini) {
@@ -464,6 +468,7 @@ function compatMessages(provider: Provider, system: string, turns: Turn[]): Reco
         // Mistral wants the tool's name on its result; Groq rejects a name field on messages.
         else messages.push({ role: 'tool', tool_call_id: r.call.id, content: r.output, ...(provider === 'mistral' ? { name: r.call.name } : {}) })
       }
+      if (t.userNote) messages.push({ role: 'user', content: t.userNote })
     }
   }
   return messages

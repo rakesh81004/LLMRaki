@@ -22,7 +22,7 @@
   "background": {
     "service_worker": "background.js"
   },
-  "permissions": ["sidePanel", "storage", "unlimitedStorage", "scripting", "notifications"],
+  "permissions": ["sidePanel", "storage", "unlimitedStorage", "scripting", "notifications", "tabGroups"],
   "host_permissions": [
     "https://api.openai.com/*",
     "https://generativelanguage.googleapis.com/*",

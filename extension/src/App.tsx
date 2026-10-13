@@ -4,6 +4,9 @@ import { HistoryIcon, PaperclipIcon, PlusIcon, SettingsIcon } from './Icons'
 import { PendingChips, SentAttachments, type PendingFile } from './AttachmentChips'
 import { ACCEPT, MAX_FILES, readAttachment } from './attachments'
 import { restartExtension, updateWaiting } from './updates'
+import { markGroupsIdle } from './tabGroup'
+import { allAutomations, findTriggered, loadBuiltInAutomations, prepareAutomation, type AutomationInfo } from './automations'
+import QueueList, { type QueuedMessage } from './QueueList'
 import SettingsView from './SettingsView'
 import HistoryView from './HistoryView'
 import StepList from './StepList'
@@ -32,10 +35,14 @@ const SUGGESTIONS = [
 ]
 
 const AGENT_SUGGESTIONS = [
-  'Fill in this form with: ',
-  'Search this site for ',
+  'Apply to 10 fresh jobs on Naukri that match my résumé',
+  'Fill in this form from my profile',
   'Read this page and list what I can do here'
 ]
+
+// A task that runs out of rounds carries on after this countdown, up to this many times in a row.
+const AUTO_CONTINUE_SECONDS = 10
+const MAX_AUTO_CONTINUES = 5
 
 const MODE_LABELS: Record<Mode, string> = { ask: 'Ask', edit: 'Edit', auto: 'Auto' }
 
@@ -83,6 +90,18 @@ export default function App(): JSX.Element {
   const [view, setView] = useState<View>('chat')
   const [input, setInput] = useState('')
   const [files, setFiles] = useState<PendingFile[]>([])
+  // Built-in automations (from the bundled automations/ folders) plus the user's own.
+  const [builtInAutomations, setBuiltInAutomations] = useState<AutomationInfo[]>([])
+  useEffect(() => {
+    void loadBuiltInAutomations().then(setBuiltInAutomations)
+  }, [])
+  const automations = allAutomations(builtInAutomations, settings?.customAutomations ?? [])
+  // Messages sent while a run is going. The ref is what a running task reads between steps.
+  const [queue, setQueue] = useState<QueuedMessage[]>([])
+  const queueRef = useRef<QueuedMessage[]>([])
+  const [queuePaused, setQueuePaused] = useState(false)
+  // A task that stopped at the step limit and will carry on by itself when the countdown ends.
+  const [autoContinue, setAutoContinue] = useState<{ until: number; task: string; count: number } | null>(null)
   const [dragging, setDragging] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [attachPage, setAttachPage] = useState(false)
@@ -91,7 +110,8 @@ export default function App(): JSX.Element {
   const [streaming, setStreaming] = useState(false)
 
   const abortRef = useRef<AbortController | null>(null)
-  const approvalsRef = useRef(new Map<string, (allowed: boolean) => void>())
+  // Steps waiting on the user, answered with the index of the button pressed (-1: cancelled).
+  const approvalsRef = useRef(new Map<string, (choice: number) => void>())
   // When a rate-limit pause ends; drives the countdown shown in the reply being written.
   const [waitUntil, setWaitUntil] = useState<number | null>(null)
   const [waitReason, setWaitReason] = useState<LimitReason>('rate')
@@ -188,33 +208,70 @@ export default function App(): JSX.Element {
   }
 
   // Sound and a system notification, each as the user has set them in Settings.
-  const alertUser = (kind: AlertKind, title: string, message: string, options: { stepId?: string; context?: string } = {}): void => {
+  const alertUser = (kind: AlertKind, title: string, message: string, options: { stepId?: string; context?: string; buttons?: string[] } = {}): void => {
     if (!settings) return
     if (settings.sound) playSound(kind)
     if (settings.notifications) notify(kind, title, message, options)
   }
 
   const send = useCallback(
-    async (text: string) => {
-      const ready = files.filter((f) => f.status === 'ready' && f.attachment).map((f) => f.attachment!)
+    // `queued` is a message from the queue: it brings its own files and page choice, and leaves
+    // whatever the user is typing now untouched.
+    async (text: string, queued?: QueuedMessage) => {
+      let ready = queued
+        ? (queued.attachments ?? [])
+        : files.filter((f) => f.status === 'ready' && f.attachment).map((f) => f.attachment!)
       if (!settings || streaming || (!text.trim() && ready.length === 0)) return
-      if (files.some((f) => f.status === 'reading')) {
+      if (!queued && files.some((f) => f.status === 'reading')) {
         setNotice('Still reading your files — send again in a moment.')
         return
       }
       setNotice(null)
+      if (!queued) setQueuePaused(false)
+      if (!queued?.continuation) setAutoContinue(null)
+
+      // A queued message that can't start goes back to the front of the queue, which pauses.
+      const cantStart = (message: string): void => {
+        setNotice(message)
+        if (queued) {
+          queueRef.current = [queued, ...queueRef.current]
+          setQueue(queueRef.current)
+          setQueuePaused(true)
+        }
+      }
 
       let page: PageContext | undefined
-      if (attachPage) {
+      if (queued ? queued.attachPage : attachPage) {
         try {
           page = await readActivePage()
         } catch (err) {
-          setNotice(err instanceof Error ? err.message : String(err))
+          cantStart(err instanceof Error ? err.message : String(err))
           return
         }
       }
 
-      const mode = settings.mode
+      // An automation — its trigger word in the message, or chosen with Run — brings its own mode,
+      // instructions and media files. A continuation doesn't re-attach them: they're already above.
+      const automation = queued?.continuation
+        ? undefined
+        : queued?.automation
+          ? automations.find((a) => a.name === queued.automation)
+          : findTriggered(text, automations)
+      if (automation) {
+        try {
+          ready = [...(await prepareAutomation(automation)), ...ready]
+        } catch (err) {
+          cantStart(err instanceof Error ? err.message : String(err))
+          return
+        }
+        if (automation.mode !== settings.mode) {
+          const next = { ...settings, mode: automation.mode }
+          setSettings(next)
+          void saveSettings(next)
+        }
+      }
+
+      const mode = automation?.mode ?? settings.mode
       // Edit and Auto start on the tab that was in front when the message was sent, even if the user
       // switches tabs mid-run. From a browser page (New Tab, Settings…) they get to a website themselves.
       let tabId: number | undefined
@@ -225,12 +282,12 @@ export default function App(): JSX.Element {
         )
         setActiveTab(target)
         if ((target.problem && !target.browserPage) || !target.tabId) {
-          setNotice(target.problem ?? 'No tab to work on.')
+          cantStart(target.problem ?? 'No tab to work on.')
           return
         }
         if (target.browserPage) startProblem = target.url ? `it's ${target.url.split(/[?#]/)[0]}` : "it's a Chrome page such as New Tab"
         if (!(await hasPageAccess())) {
-          setNotice('Edit and Auto need permission to read and change pages. Turn on “Reading web pages” in Settings.')
+          cantStart('Edit and Auto need permission to read and change pages. Turn on “Reading web pages” in Settings.')
           return
         }
         tabId = target.tabId
@@ -252,9 +309,11 @@ export default function App(): JSX.Element {
         messages: [...history, pending]
       }
       setConversation(base)
-      setInput('')
-      setFiles([])
-      setAttachPage(false)
+      if (!queued) {
+        setInput('')
+        setFiles([])
+        setAttachPage(false)
+      }
       setStreaming(true)
       stickToBottomRef.current = true
 
@@ -263,6 +322,13 @@ export default function App(): JSX.Element {
       let reply = ''
       let failed = false
       let errorText = ''
+      let hitLimit = false
+      // The task this run belongs to: the user's own message, or the task a continuation carries on.
+      const task = queued?.continuation?.task ?? text.trim()
+      const continueCount = queued?.continuation?.count ?? 0
+      const willContinue = (): boolean =>
+        hitLimit && !failed && !controller.signal.aborted && settings.autoContinue !== false &&
+        continueCount < MAX_AUTO_CONTINUES && queueRef.current.length === 0
       const steps: AgentStep[] = []
 
       let note: string | undefined
@@ -307,7 +373,7 @@ export default function App(): JSX.Element {
             show(reply)
           }
         } else {
-          reply = await runAgent(settings, mode, history, tabId!, controller.signal, {
+          const result = await runAgent(settings, mode, history, tabId!, controller.signal, {
             onStep: (step) => {
               const i = steps.findIndex((s) => s.id === step.id)
               if (i === -1) steps.push(step)
@@ -317,14 +383,34 @@ export default function App(): JSX.Element {
             requestApproval: (step) =>
               new Promise<boolean>((resolve) => {
                 if (controller.signal.aborted) return resolve(false)
-                approvalsRef.current.set(step.id, resolve)
+                approvalsRef.current.set(step.id, (choice) => resolve(choice === 0))
                 alertUser('approval', 'LLMRaki needs your OK', `${step.label}${step.detail ? ` — ${step.detail}` : ''}`, {
                   stepId: step.id,
                   context: 'Allow or Deny here, or in the side panel'
                 })
               }),
-            rateLimit
+            requestChoice: (step, alert, timeoutMs, fallback) =>
+              new Promise<number>((resolve) => {
+                if (controller.signal.aborted) return resolve(fallback)
+                let settled = false
+                const finish = (choice: number): void => {
+                  if (settled) return
+                  settled = true
+                  clearTimeout(timer)
+                  approvalsRef.current.delete(step.id)
+                  clearApprovalNotification(step.id)
+                  resolve(choice < 0 ? fallback : choice)
+                }
+                // Nobody answering doesn't hold up the rest of the task forever.
+                const timer = setTimeout(() => finish(fallback), timeoutMs)
+                approvalsRef.current.set(step.id, finish)
+                alertUser('error', alert.title, alert.message, { stepId: step.id, context: alert.context, buttons: step.choices })
+              }),
+            rateLimit,
+            takeMessages: takeForRunningTask
           }, startProblem)
+          reply = result.text
+          hitLimit = !!result.hitLimit
         }
       } catch (err) {
         if (!controller.signal.aborted) {
@@ -334,10 +420,14 @@ export default function App(): JSX.Element {
         }
       } finally {
         abortRef.current = null
-        setStreaming(false)
         setWaitUntil(null)
       }
 
+      // Stopped or failed: hold the queue rather than firing the next message into the same problem.
+      if (controller.signal.aborted || failed) setQueuePaused(true)
+      // The task is over: its tab group stays, but no longer says "working".
+      if (mode !== 'ask') void markGroupsIdle()
+      try {
       if (controller.signal.aborted && !reply) reply = '_Stopped._'
       if (!failed) show(reply)
 
@@ -346,6 +436,10 @@ export default function App(): JSX.Element {
         const actions = steps.filter((s) => s.status === 'done' && s.kind !== 'read').length
         if (failed) {
           alertUser('error', 'LLMRaki stopped', errorText.split('\n')[0])
+        } else if (willContinue()) {
+          // Not finished yet — it carries on by itself, so no "done" alert.
+        } else if (hitLimit) {
+          alertUser('done', 'LLMRaki paused', 'It reached the step limit. Send a message to continue the task.')
         } else {
           const summary = plainText(reply) || 'Done.'
           alertUser(
@@ -365,9 +459,105 @@ export default function App(): JSX.Element {
       const keep = !failed || steps.length > 0
       const toSave: Conversation = { ...base, updatedAt: Date.now(), messages: keep ? [...history, saved] : history }
       setConversations(await saveConversation(toSave))
+      if (willContinue()) setAutoContinue({ until: Date.now() + AUTO_CONTINUE_SECONDS * 1000, task, count: continueCount + 1 })
+      } finally {
+        // Only now is the run fully over (reply shown and saved), so a queued message can start.
+        setStreaming(false)
+      }
     },
-    [settings, streaming, attachPage, conversation, files]
+    [settings, streaming, attachPage, conversation, files, automations]
   )
+
+  const runAutomation = (name: string): void => {
+    const automation = automations.find((a) => a.name === name)
+    if (!automation) return
+    setView('chat')
+    const text = automation.trigger || `Run the ${automation.title} automation`
+    const item = { id: crypto.randomUUID(), text, automation: name }
+    if (streaming) {
+      queueRef.current = [...queueRef.current, item]
+      setQueue(queueRef.current)
+    } else {
+      void send(text, item)
+    }
+  }
+
+  const typedAutomation = !streaming && input.trim() ? findTriggered(input, automations) : undefined
+
+  // ---- Message queue: what the user sends while a run is still going ----
+
+  const enqueue = (text: string): void => {
+    const attachments = files.filter((f) => f.status === 'ready' && f.attachment).map((f) => f.attachment!)
+    if (!text.trim() && attachments.length === 0) return
+    if (files.some((f) => f.status === 'reading')) {
+      setNotice('Still reading your files — queue the message again in a moment.')
+      return
+    }
+    const item: QueuedMessage = {
+      id: crypto.randomUUID(),
+      text: text.trim(),
+      ...(attachments.length ? { attachments } : {}),
+      ...(attachPage ? { attachPage: true } : {})
+    }
+    queueRef.current = [...queueRef.current, item]
+    setQueue(queueRef.current)
+    setInput('')
+    setFiles([])
+    setAttachPage(false)
+  }
+
+  const removeQueued = (id: string): void => {
+    queueRef.current = queueRef.current.filter((q) => q.id !== id)
+    setQueue(queueRef.current)
+  }
+
+  // Edit/Auto runs read plain text messages between steps. Messages with files or a page attached
+  // wait for their own turn, and order is kept: nothing jumps ahead of a waiting message.
+  const takeForRunningTask = (): string[] => {
+    const taken: string[] = []
+    while (queueRef.current.length > 0 && !queueRef.current[0].attachments && !queueRef.current[0].attachPage && queueRef.current[0].text) {
+      taken.push(queueRef.current[0].text)
+      queueRef.current = queueRef.current.slice(1)
+    }
+    if (taken.length > 0) setQueue(queueRef.current)
+    return taken
+  }
+
+  // When a run is over, the next queued message goes out by itself (unless the queue is paused).
+  const sendRef = useRef(send)
+  sendRef.current = send
+  useEffect(() => {
+    if (streaming || queuePaused || queue.length === 0) return
+    const [next, ...rest] = queue
+    queueRef.current = rest
+    setQueue(rest)
+    void sendRef.current(next.text, next)
+  }, [streaming, queuePaused, queue])
+
+  // Counts down, then carries on with a task that stopped at the step limit.
+  useEffect(() => {
+    if (!autoContinue) return
+    const timer = setInterval(() => {
+      setTick((t) => t + 1)
+      if (Date.now() < autoContinue.until) return
+      clearInterval(timer)
+      setAutoContinue(null)
+      continueNow(autoContinue)
+    }, 250)
+    return () => clearInterval(timer)
+  }, [autoContinue])
+
+  const continueNow = (pendingContinue: { task: string; count: number }): void => {
+    setAutoContinue(null)
+    const text =
+      `Continue the task: “${pendingContinue.task}”. You paused because you reached the step limit — the steps you already completed are listed above. ` +
+      "Pick up exactly where you left off, don't redo finished work, and keep going until the whole task is done."
+    void sendRef.current(text, { id: crypto.randomUUID(), text, continuation: pendingContinue })
+  }
+
+  const sendNextQueued = (): void => {
+    setQueuePaused(false)
+  }
 
   // Reads each file into an attachment in the background; chips show progress and any problem.
   const addFiles = (incoming: File[]): void => {
@@ -394,16 +584,17 @@ export default function App(): JSX.Element {
   const fileErrors = files.filter((f) => f.status === 'error')
 
   const stop = (): void => {
+    setAutoContinue(null)
     abortRef.current?.abort()
     for (const [stepId, resolve] of approvalsRef.current) {
-      resolve(false)
+      resolve(-1)
       clearApprovalNotification(stepId)
     }
     approvalsRef.current.clear()
   }
 
-  const answerApproval = (stepId: string, allowed: boolean): void => {
-    approvalsRef.current.get(stepId)?.(allowed)
+  const answerApproval = (stepId: string, choice: number): void => {
+    approvalsRef.current.get(stepId)?.(choice)
     approvalsRef.current.delete(stepId)
     clearApprovalNotification(stepId)
   }
@@ -414,7 +605,7 @@ export default function App(): JSX.Element {
     const onButton = (id: string, buttonIndex: number): void => {
       if (!id.startsWith(APPROVAL_PREFIX)) return
       const stepId = id.slice(APPROVAL_PREFIX.length)
-      approvalsRef.current.get(stepId)?.(buttonIndex === 0)
+      approvalsRef.current.get(stepId)?.(buttonIndex)
       approvalsRef.current.delete(stepId)
       void chrome.notifications.clear(id)
     }
@@ -466,8 +657,16 @@ export default function App(): JSX.Element {
     })
   }
 
+  const clearQueue = (): void => {
+    queueRef.current = []
+    setQueue([])
+    setQueuePaused(false)
+  }
+
   const startNewChat = (): void => {
+    setAutoContinue(null)
     stop()
+    clearQueue()
     setConversation(newConversation())
     setView('chat')
     setNotice(null)
@@ -477,7 +676,8 @@ export default function App(): JSX.Element {
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>): void => {
     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault()
-      void send(input)
+      if (streaming) enqueue(input)
+      else void send(input)
     }
   }
 
@@ -512,6 +712,8 @@ export default function App(): JSX.Element {
       <div className="app">
         <SettingsView
           settings={settings}
+          automations={builtInAutomations}
+          onRunAutomation={runAutomation}
           onClose={() => setView('chat')}
           onSave={(next) => {
             const chosen = { ...next, providerChosen: true }
@@ -533,6 +735,7 @@ export default function App(): JSX.Element {
           onClose={() => setView('chat')}
           onOpen={(c) => {
             stop()
+            clearQueue()
             setConversation(c)
             setView('chat')
           }}
@@ -589,6 +792,15 @@ export default function App(): JSX.Element {
           <div className="empty-state">
             <img src="icons/icon128.png" alt="" />
             <p>{EMPTY_TEXT[settings.mode]}</p>
+            {automations.length > 0 && (
+              <div className="automation-chips">
+                {automations.map((a) => (
+                  <button key={a.name} className="automation-chip" title={a.description} onClick={() => runAutomation(a.name)}>
+                    ▶ {a.title}
+                  </button>
+                ))}
+              </div>
+            )}
             {providerChain(settings).length === 1 && settings.provider !== 'ollama' && (
               <button className="backup-nudge" onClick={() => setView('backups')}>
                 <strong>Add free backups</strong> — Groq and Mistral take over when {PROVIDER_LABELS[settings.provider]} hits
@@ -682,6 +894,25 @@ export default function App(): JSX.Element {
         )}
       </div>
 
+      {autoContinue && !streaming && (
+        <div className="update-banner continue-banner" role="status">
+          <span>
+            Paused at the step limit — continuing automatically in{' '}
+            <strong>{Math.max(0, Math.ceil((autoContinue.until - Date.now()) / 1000))}s</strong>
+            <span className="continue-count">
+              {' '}
+              (auto-continue {autoContinue.count} of {MAX_AUTO_CONTINUES})
+            </span>
+          </span>
+          <button className="primary-button small" onClick={() => continueNow(autoContinue)}>
+            Continue now
+          </button>
+          <button className="ghost-button small" onClick={() => setAutoContinue(null)}>
+            Cancel
+          </button>
+        </div>
+      )}
+
       {updateReady && !streaming && (
         <div className="update-banner" role="status">
           A new version of LLMRaki is ready.
@@ -709,7 +940,30 @@ export default function App(): JSX.Element {
         </div>
       )}
 
+      {queue.length > 0 && (
+        <QueueList
+          queue={queue}
+          paused={queuePaused && !streaming}
+          agentRunning={streaming && agentMode}
+          onRemove={removeQueued}
+          onEdit={(item) => {
+            removeQueued(item.id)
+            setInput(item.text)
+            textareaRef.current?.focus()
+          }}
+          onResume={sendNextQueued}
+        />
+      )}
+
       <div className="composer">
+        {typedAutomation && (
+          <div className="automation-hint">
+            ⚡ Runs the <strong>{typedAutomation.title}</strong> automation in {MODE_LABELS[typedAutomation.mode]} mode
+            {typedAutomation.builtIn
+              ? ` with ${(typedAutomation.mediaPaths?.length ?? 0) + 1} file${(typedAutomation.mediaPaths?.length ?? 0) === 0 ? '' : 's'}`
+              : ` with ${(typedAutomation.media?.length ?? 0) + 1} file${(typedAutomation.media?.length ?? 0) === 0 ? '' : 's'}`}
+          </div>
+        )}
         {files.length > 0 && (
           <PendingChips files={files} onRemove={(id) => setFiles((list) => list.filter((f) => f.id !== id))} />
         )}
@@ -719,7 +973,11 @@ export default function App(): JSX.Element {
           rows={1}
           autoFocus
           placeholder={
-            agentMode
+            streaming
+              ? agentMode
+                ? 'Add to the task — LLMRaki reads it before its next step…'
+                : 'Type your next message — it’s sent when this reply finishes…'
+              : agentMode
               ? 'Tell LLMRaki what to do on this page…'
               : attachPage
                 ? 'Ask about this page…'
@@ -792,9 +1050,20 @@ export default function App(): JSX.Element {
             {PROVIDER_LABELS[settings.provider]} · {activeModel(settings)}
           </button>
           {streaming ? (
-            <button className="send-button stop" onClick={stop} title="Stop">
-              ■
-            </button>
+            <>
+              {(input.trim() || files.some((f) => f.status === 'ready')) && (
+                <button
+                  className="send-button queue-send"
+                  onClick={() => enqueue(input)}
+                  title={agentMode ? 'Queue — LLMRaki reads it before its next step (Enter)' : 'Queue — sent when this reply finishes (Enter)'}
+                >
+                  ↑
+                </button>
+              )}
+              <button className="send-button stop" onClick={stop} title="Stop">
+                ■
+              </button>
+            </>
           ) : (
             <button
               className="send-button"

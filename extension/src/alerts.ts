@@ -58,10 +58,13 @@ export function notify(
   kind: AlertKind,
   title: string,
   message: string,
-  options: { stepId?: string; context?: string } = {}
+  options: { stepId?: string; context?: string; buttons?: string[] } = {}
 ): void {
   if (!chrome.notifications) return
-  const id = kind === 'approval' && options.stepId ? APPROVAL_PREFIX + options.stepId : RESULT_ID
+  // Anything tied to a step is waiting for the user's answer (Allow/Deny, Try again/Skip…).
+  const waiting = !!options.stepId
+  const id = waiting ? APPROVAL_PREFIX + options.stepId : RESULT_ID
+  const buttons = options.buttons ?? (kind === 'approval' ? ['Allow', 'Deny'] : [])
   // Our own sound plays from the panel, so the system notification is silent to avoid a double chime.
   void chrome.notifications.clear(id).then(() =>
     chrome.notifications.create(id, {
@@ -71,10 +74,10 @@ export function notify(
       message: message.slice(0, 250),
       ...(options.context ? { contextMessage: options.context.slice(0, 80) } : {}),
       silent: true,
-      priority: kind === 'approval' ? 2 : 0,
-      // An approval stays up until it's answered; results go away on their own.
-      requireInteraction: kind === 'approval',
-      ...(kind === 'approval' ? { buttons: [{ title: 'Allow' }, { title: 'Deny' }] } : {})
+      priority: waiting ? 2 : 0,
+      // Something waiting for an answer stays up until it's answered; results go away on their own.
+      requireInteraction: waiting,
+      ...(buttons.length ? { buttons: buttons.slice(0, 2).map((title) => ({ title })) } : {})
     })
   )
 }

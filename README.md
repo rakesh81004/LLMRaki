@@ -44,6 +44,7 @@ npm run build:win   # produces an NSIS installer in dist/ (run on Windows, or cr
 - Streaming chat with Markdown rendering, saved chat history, and a Stop button
 - **Attach page**: sends your selected text, or the page's visible text if nothing is selected, along with the message. Off by default and resets after each message; the browser asks for permission the first time
 - Open it with the toolbar icon or `Ctrl+Shift+L` (`Cmd+Shift+L` on macOS)
+- **Automations**: repeatable tasks kept in `automations/<name>/` — an `AUTOMATION.md` (instructions, trigger word, mode) plus a `media/` folder of files used on every run, such as a résumé. They're bundled into the extension at build time; type the trigger word (e.g. `CODE COLDDM`) or press Run in Settings, and LLMRaki attaches the instructions and media automatically. See `automations/INDEX.md`. `media/` folders are git-ignored so personal files are never pushed
 - **Attach files** with the paperclip, by dragging them onto the panel, or by pasting an image: PDF, Word (.docx), text, Markdown, CSV, JSON, HTML and code files are read as text; PNG, JPG, WebP and GIF images are sent for the model to look at. Up to 6 files per message
 - Three modes, switched below the message box:
   - **Ask** — chat only; the page is never changed

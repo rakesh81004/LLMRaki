@@ -280,6 +280,45 @@ function clickInPage(ref: string): ClickInfo {
   return { ok: true }
 }
 
+export interface ScrollResult {
+  ok: boolean
+  atBottom: boolean
+  moved: number
+}
+
+function scrollInPage(direction: string): ScrollResult {
+  // Lists that load more as you scroll often live in their own scrolling panel, not the window.
+  const candidates = [document.scrollingElement as HTMLElement, ...Array.from(document.querySelectorAll<HTMLElement>('main, section, div, ul'))]
+  const scroller =
+    candidates.find((el) => el && el.scrollHeight - el.clientHeight > 200 && el.clientHeight > window.innerHeight * 0.5 &&
+      (el === document.scrollingElement || /(auto|scroll)/.test(getComputedStyle(el).overflowY))) ??
+    (document.scrollingElement as HTMLElement)
+  const before = scroller.scrollTop
+  const page = Math.max(200, Math.round(scroller.clientHeight * 0.85))
+  if (direction === 'top') scroller.scrollTop = 0
+  else if (direction === 'bottom') scroller.scrollTop = scroller.scrollHeight
+  else scroller.scrollTop = before + (direction === 'up' ? -page : page)
+  const atBottom = scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 4
+  return { ok: true, atBottom, moved: Math.round(scroller.scrollTop - before) }
+}
+
+function pressKeyInPage(ref: string, key: string): ClickInfo {
+  const el = ref ? (document.querySelector(`[data-llmraki-ref="${CSS.escape(ref)}"]`) as HTMLElement | null) : (document.activeElement as HTMLElement | null)
+  if (ref && !el) return { ok: false, error: `Element ${ref} isn't on the page any more. Call read_page again.` }
+  const target = el ?? document.body
+  target.focus?.()
+  const codes: Record<string, [string, number]> = { Enter: ['Enter', 13], Escape: ['Escape', 27], Tab: ['Tab', 9], ArrowDown: ['ArrowDown', 40], ArrowUp: ['ArrowUp', 38] }
+  const [code, keyCode] = codes[key] ?? [key, 0]
+  const init = { key, code, keyCode, which: keyCode, bubbles: true, cancelable: true }
+  const notCancelled = target.dispatchEvent(new KeyboardEvent('keydown', init))
+  target.dispatchEvent(new KeyboardEvent('keypress', init))
+  target.dispatchEvent(new KeyboardEvent('keyup', init))
+  // Pages ignore a script's key presses for their built-in behaviour, so do what a real Enter would:
+  // submit the surrounding form, unless the page's own key handler already dealt with it.
+  if (key === 'Enter' && notCancelled && target instanceof HTMLInputElement && target.form) target.form.requestSubmit()
+  return { ok: true }
+}
+
 async function run<A extends unknown[], R>(tabId: number, func: (...args: A) => R, args: A): Promise<R> {
   const [result] = await chrome.scripting.executeScript({ target: { tabId }, func, args }).catch((err) => {
     throw friendlyScriptError(err)
@@ -293,6 +332,8 @@ export const fillField = (tabId: number, ref: string, value: string): Promise<Fi
   run(tabId, fillInPage, [ref, value])
 export const inspectClick = (tabId: number, ref: string): Promise<ClickInfo> => run(tabId, inspectClickInPage, [ref])
 export const clickElement = (tabId: number, ref: string): Promise<ClickInfo> => run(tabId, clickInPage, [ref])
+export const scrollPage = (tabId: number, direction: string): Promise<ScrollResult> => run(tabId, scrollInPage, [direction])
+export const pressKey = (tabId: number, ref: string, key: string): Promise<ClickInfo> => run(tabId, pressKeyInPage, [ref, key])
 
 // A click can start a navigation; give the new page a moment to load before the next read.
 export async function waitForPageSettled(tabId: number): Promise<void> {

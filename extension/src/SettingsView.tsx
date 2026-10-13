@@ -2,6 +2,9 @@ import { useEffect, useState } from 'react'
 import KeySection, { type KeyedProvider } from './KeySection'
 import { notify, playSound } from './alerts'
 import { versionLabel } from './updates'
+import { AutoApproveSection, MemorySection, ProfileSection, SkillsSection } from './AgentSettings'
+import AutomationsSection from './AutomationsSection'
+import type { AutomationInfo } from './automations'
 import { listOllamaModels, PROVIDER_LABELS } from './providers'
 import { hasPageAccess, requestPageAccess } from './pageContext'
 import type { Provider, Settings } from './types'
@@ -12,6 +15,8 @@ interface Props {
   settings: Settings
   onSave: (settings: Settings) => void
   onClose: () => void
+  automations: AutomationInfo[]
+  onRunAutomation: (name: string) => void
 }
 
 function KeyField({
@@ -46,7 +51,7 @@ function KeyField({
   )
 }
 
-export default function SettingsView({ settings, onSave, onClose }: Props): JSX.Element {
+export default function SettingsView({ settings, onSave, onClose, automations, onRunAutomation }: Props): JSX.Element {
   const [draft, setDraft] = useState<Settings>(settings)
   const [ollamaModels, setOllamaModels] = useState<string[] | null>(null)
   const [pageAccess, setPageAccess] = useState(false)
@@ -165,6 +170,15 @@ export default function SettingsView({ settings, onSave, onClose }: Props): JSX.
             <KeySection key={`backup-${p}`} provider={p} draft={draft} update={update} backup />
           ))}
       </div>
+
+      <ProfileSection draft={draft} update={update} />
+      <AutoApproveSection draft={draft} update={update} />
+      <SkillsSection draft={draft} update={update} />
+      <AutomationsSection draft={draft} update={update} builtIn={automations} onRun={(name) => {
+        onSave(draft)
+        onRunAutomation(name)
+      }} />
+      <MemorySection />
 
       <div className="field">
         <div className="field-row">
