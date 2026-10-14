@@ -81,6 +81,8 @@ function bundleAutomations(): Plugin {
             trigger: header.trigger || '',
             mode: ['ask', 'edit', 'auto'].includes(header.mode) ? header.mode : 'auto',
             description: header.description || '',
+            // e.g. "autoApprove: linkedin.com, naukri.com"
+            autoApprove: (header.autoApprove || '').split(',').map((s) => s.trim()).filter(Boolean),
             instructions: `automations/${folder}/AUTOMATION.md`,
             media: bundledMedia
           })

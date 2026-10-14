@@ -10,7 +10,13 @@ interface Props {
   onRun: (name: string) => void
 }
 
-const EMPTY: CustomAutomation = { name: '', title: '', trigger: '', mode: 'auto', description: '', instructions: '', media: [] }
+const EMPTY: CustomAutomation = { name: '', title: '', trigger: '', mode: 'auto', description: '', instructions: '', media: [], autoApprove: [] }
+
+const sitesFrom = (text: string): string[] =>
+  text
+    .split(/[\s,]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
 
 function slug(text: string): string {
   return text.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'automation'
@@ -23,6 +29,8 @@ export default function AutomationsSection({ draft, update, builtIn, onRun }: Pr
   const [originalName, setOriginalName] = useState<string | null>(null)
   const [reading, setReading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // The auto-approve box as typed; turned into a list of sites on save.
+  const [sitesText, setSitesText] = useState('')
   const mdRef = useRef<HTMLInputElement>(null)
   const mediaRef = useRef<HTMLInputElement>(null)
 
@@ -30,7 +38,9 @@ export default function AutomationsSection({ draft, update, builtIn, onRun }: Pr
     if (!editing || !editing.title.trim() || !editing.instructions.trim()) return
     const name = slug(editing.title)
     const next = custom.filter((a) => a.name !== originalName && a.name !== name)
-    update({ customAutomations: [...next, { ...editing, name, title: editing.title.trim(), trigger: editing.trigger.trim() }] })
+    update({
+      customAutomations: [...next, { ...editing, name, title: editing.title.trim(), trigger: editing.trigger.trim(), autoApprove: sitesFrom(sitesText) }]
+    })
     setEditing(null)
     setOriginalName(null)
   }
@@ -56,7 +66,14 @@ export default function AutomationsSection({ draft, update, builtIn, onRun }: Pr
       <div className="field-row">
         <span className="field-label grow">Automations</span>
         {!editing && (
-          <button type="button" className="ghost-button" onClick={() => setEditing({ ...EMPTY })}>
+          <button
+            type="button"
+            className="ghost-button"
+            onClick={() => {
+              setEditing({ ...EMPTY })
+              setSitesText('')
+            }}
+          >
             Add automation
           </button>
         )}
@@ -103,6 +120,8 @@ export default function AutomationsSection({ draft, update, builtIn, onRun }: Pr
                 const text = await file.text()
                 const title = text.match(/^title:\s*(.+)$/m)?.[1] ?? text.match(/^name:\s*(.+)$/m)?.[1]
                 const description = text.match(/^description:\s*(.+)$/m)?.[1]
+                const sites = text.match(/^autoApprove:\s*(.+)$/m)?.[1]
+                if (sites && !sitesText.trim()) setSitesText(sitesFrom(sites).join(', '))
                 setEditing((cur) =>
                   cur
                     ? {
@@ -122,6 +141,11 @@ export default function AutomationsSection({ draft, update, builtIn, onRun }: Pr
             placeholder="Step-by-step instructions for the task."
             value={editing.instructions}
             onChange={(e) => setEditing({ ...editing, instructions: e.target.value })}
+          />
+          <input
+            placeholder="Auto-approve on these sites after you answer its question, e.g. linkedin.com (optional)"
+            value={sitesText}
+            onChange={(e) => setSitesText(e.target.value)}
           />
           <div className="field-row">
             <span className="field-hint grow">Media files used on every run (résumé, templates, images)</span>
@@ -193,6 +217,7 @@ export default function AutomationsSection({ draft, update, builtIn, onRun }: Pr
                           const mine = custom.find((c) => c.name === a.name)
                           if (mine) {
                             setEditing({ ...mine })
+                            setSitesText((mine.autoApprove ?? []).join(', '))
                             setOriginalName(mine.name)
                           }
                         }}
@@ -220,6 +245,11 @@ export default function AutomationsSection({ draft, update, builtIn, onRun }: Pr
                   )}
                   {files.length > 0 && <> · Files: {files.map((f) => `📎 ${f}`).join(', ')}</>}
                 </div>
+                {(a.autoApprove?.length ?? 0) > 0 && (
+                  <div className="field-hint">
+                    Runs without per-click prompts on {a.autoApprove!.join(', ')} once you’ve answered its question
+                  </div>
+                )}
               </li>
             )
           })}

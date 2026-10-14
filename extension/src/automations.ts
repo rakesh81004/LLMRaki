@@ -11,6 +11,8 @@ export interface AutomationInfo {
   trigger: string
   mode: Mode
   description: string
+  // Sites where its clicks may send/submit without a prompt, once the user has answered its question.
+  autoApprove?: string[]
   builtIn: boolean
   // Built-in: paths inside the extension. Yours: the instructions text and files themselves.
   instructionsPath?: string
@@ -27,6 +29,7 @@ export interface CustomAutomation {
   description: string
   instructions: string
   media: Attachment[]
+  autoApprove?: string[]
 }
 
 export async function loadBuiltInAutomations(): Promise<AutomationInfo[]> {
@@ -39,6 +42,7 @@ export async function loadBuiltInAutomations(): Promise<AutomationInfo[]> {
       trigger: string
       mode: Mode
       description: string
+      autoApprove?: string[]
       instructions: string
       media: { name: string; path: string }[]
     }[]
@@ -63,9 +67,10 @@ export function findTriggered(text: string, automations: AutomationInfo[]): Auto
 // Tells the model how to carry out instructions written for other assistants with LLMRaki's own tools.
 const HOW_TO_RUN = `[How LLMRaki carries out this automation]
 - You are working in the user's own logged-in Chrome. Where these instructions mention running JavaScript, page-text tools or screenshots, use your own tools for the same result: open_url, read_page, scroll_page, click, fill_field, press_key, list_tabs, switch_to_tab, close_tab and wait. read_page gives you the page text and its links/buttons.
-- Where they mention a history, tracker or memory file (for example "colddm-tracker"), call recall with that name at the start, and save to it with remember (start each note with the tracker's name) before you finish.
+- Where they mention a history, tracker or memory file (for example "colddm-tracker" or "/areas/colddm-tracker.md"), that is a memory file: read it with memory_file_read at the start, and add to it with memory_file_append where the instructions say to save.
 - When it applies to jobs, call list_applications first so nothing is applied to twice, and record every outcome with log_application — "failed" with the exact reason when an application doesn't go through, so LLMRaki can retry it once and then ask the user.
-- When it says to ask the user, get approval or wait for a choice (a shortlist, an unknown answer), stop and ask in your reply; the user's answer arrives as their next message, and you continue from there.
+- When it says to ask the user — an approval, a multiple-choice question, a shortlist, an unknown answer — call ask_user with the question and its options. Put everything they need to decide in the question (for example the names and the Sir/Mam mapping). It waits for their answer, and you then carry straight on in the same run.
+- Ask only the questions these instructions ask for. After the user approves, do what they approved from start to finish without further questions, and skip (with the reason) anything the instructions say to skip.
 - The files attached with this automation (for example a résumé) are the user's own and the source of truth about them.
 - Follow the automation's own rules about what needs the user's explicit go-ahead.
 [End of note — the automation follows]

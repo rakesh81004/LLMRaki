@@ -101,7 +101,7 @@ export default function App(): JSX.Element {
   const queueRef = useRef<QueuedMessage[]>([])
   const [queuePaused, setQueuePaused] = useState(false)
   // A task that stopped at the step limit and will carry on by itself when the countdown ends.
-  const [autoContinue, setAutoContinue] = useState<{ until: number; task: string; count: number } | null>(null)
+  const [autoContinue, setAutoContinue] = useState<{ until: number; task: string; count: number; startedAt: number } | null>(null)
   const [dragging, setDragging] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [attachPage, setAttachPage] = useState(false)
@@ -112,6 +112,9 @@ export default function App(): JSX.Element {
   const abortRef = useRef<AbortController | null>(null)
   // Steps waiting on the user, answered with the index of the button pressed (-1: cancelled).
   const approvalsRef = useRef(new Map<string, (choice: number) => void>())
+  // An ask_user question waiting for an answer: a message typed meanwhile answers it, resolving the
+  // step with `typed` (the index just past its options).
+  const questionRef = useRef<{ stepId: string; typed: number } | null>(null)
   // When a rate-limit pause ends; drives the countdown shown in the reply being written.
   const [waitUntil, setWaitUntil] = useState<number | null>(null)
   const [waitReason, setWaitReason] = useState<LimitReason>('rate')
@@ -208,9 +211,14 @@ export default function App(): JSX.Element {
   }
 
   // Sound and a system notification, each as the user has set them in Settings.
-  const alertUser = (kind: AlertKind, title: string, message: string, options: { stepId?: string; context?: string; buttons?: string[] } = {}): void => {
+  const alertUser = (
+    kind: AlertKind,
+    title: string,
+    message: string,
+    options: { stepId?: string; context?: string; buttons?: string[]; id?: string; progress?: { count: number; goal?: number } } = {}
+  ): void => {
     if (!settings) return
-    if (settings.sound) playSound(kind)
+    if (settings.sound) playSound(kind, options.progress)
     if (settings.notifications) notify(kind, title, message, options)
   }
 
@@ -272,6 +280,13 @@ export default function App(): JSX.Element {
       }
 
       const mode = automation?.mode ?? settings.mode
+      // The automation this chat runs under: one started now, or the one the chat began with, so
+      // replies to its question carry on with the same rules. Its auto-approved sites apply once the
+      // user has answered its question — a typed reply to it counts too.
+      const chatAutomation = automation ?? automations.find((a) => a.name === conversation.automation)
+      let automationApproved = automation
+        ? false
+        : !!chatAutomation && (!!conversation.automationApproved || (!queued?.continuation && conversation.messages.length > 0))
       // Edit and Auto start on the tab that was in front when the message was sent, even if the user
       // switches tabs mid-run. From a browser page (New Tab, Settings…) they get to a website themselves.
       let tabId: number | undefined
@@ -306,7 +321,8 @@ export default function App(): JSX.Element {
         ...conversation,
         title: conversation.messages.length === 0 ? titleFrom(text) : conversation.title,
         updatedAt: Date.now(),
-        messages: [...history, pending]
+        messages: [...history, pending],
+        ...(chatAutomation ? { automation: chatAutomation.name, automationApproved } : {})
       }
       setConversation(base)
       if (!queued) {
@@ -326,6 +342,7 @@ export default function App(): JSX.Element {
       // The task this run belongs to: the user's own message, or the task a continuation carries on.
       const task = queued?.continuation?.task ?? text.trim()
       const continueCount = queued?.continuation?.count ?? 0
+      const taskStartedAt = queued?.continuation?.startedAt ?? Date.now()
       const willContinue = (): boolean =>
         hitLimit && !failed && !controller.signal.aborted && settings.autoContinue !== false &&
         continueCount < MAX_AUTO_CONTINUES && queueRef.current.length === 0
@@ -392,23 +409,49 @@ export default function App(): JSX.Element {
             requestChoice: (step, alert, timeoutMs, fallback) =>
               new Promise<number>((resolve) => {
                 if (controller.signal.aborted) return resolve(fallback)
+                const question = step.kind === 'question'
+                const choices = step.choices ?? []
                 let settled = false
                 const finish = (choice: number): void => {
                   if (settled) return
                   settled = true
                   clearTimeout(timer)
                   approvalsRef.current.delete(step.id)
+                  if (questionRef.current?.stepId === step.id) questionRef.current = null
                   clearApprovalNotification(step.id)
                   resolve(choice < 0 ? fallback : choice)
                 }
                 // Nobody answering doesn't hold up the rest of the task forever.
                 const timer = setTimeout(() => finish(fallback), timeoutMs)
                 approvalsRef.current.set(step.id, finish)
-                alertUser('error', alert.title, alert.message, { stepId: step.id, context: alert.context, buttons: step.choices })
+                if (question) questionRef.current = { stepId: step.id, typed: choices.length }
+                // A notification fits two buttons; questions with more options are answered in the panel.
+                alertUser(question ? 'approval' : 'error', alert.title, alert.message, {
+                  stepId: step.id,
+                  context: alert.context,
+                  buttons: question && choices.length > 2 ? [] : choices
+                })
               }),
+            // Each application that goes through gets its own sound and notification: "Applied 3/10".
+            onApplied: ({ title, company, count, goal }) => {
+              const progress = goal ? `Applied ${count}/${goal}` : `Applied ${count}`
+              alertUser('applied', `Applied: ${company} — ${title}`, progress, {
+                id: `llmraki-applied-${Date.now()}`,
+                context: goal && count >= goal ? 'All done ✓' : undefined,
+                progress: { count, goal }
+              })
+            },
+            onAnswered: () => {
+              automationApproved = true
+              setConversation((c) => (c.id === base.id && c.automation ? { ...c, automationApproved: true } : c))
+            },
             rateLimit,
             takeMessages: takeForRunningTask
-          }, startProblem)
+          }, {
+            startProblem,
+            task: { text: task, startedAt: taskStartedAt },
+            ...(chatAutomation?.autoApprove?.length ? { automation: { sites: chatAutomation.autoApprove, approved: automationApproved } } : {})
+          })
           reply = result.text
           hitLimit = !!result.hitLimit
         }
@@ -457,9 +500,14 @@ export default function App(): JSX.Element {
         ? { ...pending, content: '', steps: [...steps] }
         : { ...pending, content: reply, ...(steps.length ? { steps: [...steps] } : {}), ...(note ? { note } : {}) }
       const keep = !failed || steps.length > 0
-      const toSave: Conversation = { ...base, updatedAt: Date.now(), messages: keep ? [...history, saved] : history }
+      const toSave: Conversation = {
+        ...base,
+        updatedAt: Date.now(),
+        messages: keep ? [...history, saved] : history,
+        ...(chatAutomation ? { automationApproved } : {})
+      }
       setConversations(await saveConversation(toSave))
-      if (willContinue()) setAutoContinue({ until: Date.now() + AUTO_CONTINUE_SECONDS * 1000, task, count: continueCount + 1 })
+      if (willContinue()) setAutoContinue({ until: Date.now() + AUTO_CONTINUE_SECONDS * 1000, task, count: continueCount + 1, startedAt: taskStartedAt })
       } finally {
         // Only now is the run fully over (reply shown and saved), so a queued message can start.
         setStreaming(false)
@@ -504,6 +552,9 @@ export default function App(): JSX.Element {
     setInput('')
     setFiles([])
     setAttachPage(false)
+    // Typed while LLMRaki is waiting on its question: this is the answer.
+    const waiting = questionRef.current
+    if (waiting && !item.attachments && !item.attachPage) answerApproval(waiting.stepId, waiting.typed)
   }
 
   const removeQueued = (id: string): void => {
@@ -547,7 +598,7 @@ export default function App(): JSX.Element {
     return () => clearInterval(timer)
   }, [autoContinue])
 
-  const continueNow = (pendingContinue: { task: string; count: number }): void => {
+  const continueNow = (pendingContinue: { task: string; count: number; startedAt: number }): void => {
     setAutoContinue(null)
     const text =
       `Continue the task: “${pendingContinue.task}”. You paused because you reached the step limit — the steps you already completed are listed above. ` +

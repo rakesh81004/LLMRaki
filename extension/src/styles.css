@@ -1207,6 +1207,26 @@ button:disabled {
   font-size: 10.5px;
   color: #34d399;
 }
+/* LLMRaki's question (ask_user) inside the step list */
+.step.question {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-left-color: var(--accent);
+  background: rgba(127, 127, 127, 0.06);
+}
+.question-text {
+  overflow-wrap: anywhere;
+}
+.question-options {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+.question-options button {
+  text-align: left;
+}
 
 /* Profile, auto-approve, skills and memory in Settings */
 .settings-textarea {
@@ -1333,6 +1353,25 @@ a.memory-text:hover {
   flex-shrink: 0;
   font-size: 11px;
   color: var(--text-muted);
+}
+.memory-list li.memory-file {
+  flex-direction: column;
+  align-items: stretch;
+}
+.memory-file .link-button.memory-text {
+  text-align: left;
+}
+.memory-file-text {
+  margin: 0;
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: inherit;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
 }
 /* Countdown before a task that hit the step limit carries on */
 .continue-banner {

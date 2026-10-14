@@ -7,7 +7,7 @@ export interface QueuedMessage {
   attachments?: Attachment[]
   attachPage?: boolean
   // Set when this message continues a task that stopped at the step limit.
-  continuation?: { task: string; count: number }
+  continuation?: { task: string; count: number; startedAt: number }
   // Run this automation (by name) with this message.
   automation?: string
 }

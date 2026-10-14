@@ -81,3 +81,59 @@ export async function deleteNote(id: string): Promise<MemoryNote[]> {
   await chrome.storage.local.set({ [NOTES_KEY]: list })
   return list
 }
+
+// Memory files: named, growing documents such as an automation's tracker ("colddm-tracker"), for
+// histories too long for a note. Added to, never overwritten, so a run can't wipe earlier ones.
+export interface MemoryFile {
+  name: string
+  text: string
+  updatedAt: number
+}
+
+const FILES_KEY = 'memoryFiles'
+const MAX_FILE_CHARS = 200_000
+
+// "/areas/colddm-tracker.md", "colddm-tracker.md" and "Colddm Tracker" all mean "colddm-tracker".
+export function memoryFileName(raw: string): string {
+  const last = raw.trim().split(/[\/]/).pop() ?? ''
+  return last
+    .replace(/\.(md|markdown|txt)$/i, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80)
+}
+
+export async function loadMemoryFiles(): Promise<MemoryFile[]> {
+  const stored = await chrome.storage.local.get(FILES_KEY)
+  return Object.values((stored[FILES_KEY] as Record<string, MemoryFile> | undefined) ?? {}).sort((a, b) => b.updatedAt - a.updatedAt)
+}
+
+export async function readMemoryFile(name: string): Promise<MemoryFile | undefined> {
+  const stored = await chrome.storage.local.get(FILES_KEY)
+  return ((stored[FILES_KEY] as Record<string, MemoryFile> | undefined) ?? {})[memoryFileName(name)]
+}
+
+// Adds text to the end of the file, creating it if needed. Past the size cap the oldest lines go.
+export async function appendMemoryFile(name: string, text: string): Promise<MemoryFile> {
+  const key = memoryFileName(name)
+  const stored = await chrome.storage.local.get(FILES_KEY)
+  const files = (stored[FILES_KEY] as Record<string, MemoryFile> | undefined) ?? {}
+  const before = files[key]?.text ?? ''
+  let combined = before ? `${before.replace(/\n+$/, '')}\n${text.trim()}\n` : `${text.trim()}\n`
+  if (combined.length > MAX_FILE_CHARS) {
+    const cut = combined.indexOf('\n', combined.length - MAX_FILE_CHARS)
+    combined = combined.slice(cut + 1)
+  }
+  const file = { name: key, text: combined, updatedAt: Date.now() }
+  await chrome.storage.local.set({ [FILES_KEY]: { ...files, [key]: file } })
+  return file
+}
+
+export async function deleteMemoryFile(name: string): Promise<MemoryFile[]> {
+  const stored = await chrome.storage.local.get(FILES_KEY)
+  const files = { ...((stored[FILES_KEY] as Record<string, MemoryFile> | undefined) ?? {}) }
+  delete files[memoryFileName(name)]
+  await chrome.storage.local.set({ [FILES_KEY]: files })
+  return loadMemoryFiles()
+}

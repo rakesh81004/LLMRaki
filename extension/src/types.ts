@@ -45,6 +45,8 @@ export interface Settings {
     description: string
     instructions: string
     media: Attachment[]
+    // Sites where this automation's runs may submit or send without a prompt for each click.
+    autoApprove?: string[]
   }[]
 }
 
@@ -85,7 +87,8 @@ export interface PageContext {
 export interface AgentStep {
   id: string
   // 'message': something the user sent while the task was running, read by LLMRaki mid-task.
-  kind: 'read' | 'fill' | 'click' | 'navigate' | 'message' | 'skill' | 'memory'
+  // 'question': LLMRaki asking the user to pick one of `choices` (ask_user).
+  kind: 'read' | 'fill' | 'click' | 'navigate' | 'message' | 'skill' | 'memory' | 'question'
   label: string
   detail?: string
   status: 'running' | 'awaiting' | 'done' | 'denied' | 'failed' | 'undone'
@@ -126,4 +129,8 @@ export interface Conversation {
   createdAt: number
   updatedAt: number
   messages: ChatMessage[]
+  // The automation this chat was started with: follow-up replies keep running under it.
+  automation?: string
+  // Set once the user has answered the automation's question, which turns on its auto-approved sites.
+  automationApproved?: boolean
 }

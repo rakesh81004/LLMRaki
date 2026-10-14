@@ -1,7 +1,7 @@
 import { toWireMessages } from './providers'
 import { clickElement, fillField, inspectClick, pressKey, scrollPage, snapshotPage, waitForPageSettled } from './pageTools'
 import { allSkills, skillIndex } from './skills'
-import { addNote, loadApplications, loadNotes, logApplication, normalizeJobUrl } from './memory'
+import { addNote, appendMemoryFile, loadApplications, loadMemoryFiles, loadNotes, logApplication, memoryFileName, normalizeJobUrl, readMemoryFile } from './memory'
 import { addTabToGroup } from './tabGroup'
 import { AFTER_ACTION_LABEL, callWithTools, SNAPSHOT_LABEL, wireToTurns, type RateLimitHooks, type ToolCall, type ToolDef, type ToolResult, type Turn } from './llm'
 import type { AgentStep, ChatMessage, Mode, Settings } from './types'
@@ -13,6 +13,15 @@ const MAX_STEPS: Record<Exclude<Mode, 'ask'>, number> = { edit: 60, auto: 150 }
 // Clicks whose label reads like this are hard to take back, so Auto mode still checks first.
 const IRREVERSIBLE_CLICK =
   /\b(send|submit|pay|purchase|buy|order|checkout|check out|delete|remove|confirm|publish|post|transfer|subscribe|sign up|register|book|reserve|donate|apply|unsubscribe|cancel (my )?(order|subscription|account))\b/i
+
+// How many jobs the task asks for, e.g. "apply 10 more jobs" → 10, for "Applied 3/10" progress.
+export function goalFromTask(text: string): number | undefined {
+  const match = text.match(
+    /\b(\d{1,3})\s+(?:(?:more|new|fresh|other|additional|relevant|matching|suitable|good|best|different)\s+)*(?:[a-z/.+-]+\s+){0,3}?(?:jobs?|applications?|openings?|roles?|positions?|vacancies)\b/i
+  )
+  const n = match ? Number(match[1]) : NaN
+  return n > 0 && n <= 200 ? n : undefined
+}
 
 // The sites where the user lets Auto mode submit without asking, cleaned to bare host names.
 export function autoApproveHosts(sites: string[]): string[] {
@@ -31,7 +40,7 @@ function siteAllowed(url: string | undefined, hosts: string[]): boolean {
   }
 }
 
-function systemPrompt(mode: Mode, settings: Settings, startProblem?: string): string {
+function systemPrompt(mode: Mode, settings: Settings, startProblem?: string, automationHosts: string[] = []): string {
   const hosts = autoApproveHosts(settings.autoApproveSites ?? [])
   const clickRule =
     mode === 'edit'
@@ -61,7 +70,11 @@ function systemPrompt(mode: Mode, settings: Settings, startProblem?: string): st
     'If the user declines an action, do not retry it — ask what they would like instead.',
     `Skills are step-by-step playbooks for kinds of tasks. When the task matches one, call use_skill with its name before starting, and follow it:\n${skillIndex(skills)}`,
     'read_profile returns the user’s résumé and personal details (experience, preferences, answers to common application questions). Use it whenever a task is about the user — applications, forms, cover letters.',
-    'Memory persists between tasks: list_applications and log_application keep a log of jobs applied to (check it to avoid applying twice, and log every application you complete); remember and recall keep other notes worth keeping.',
+    'Memory persists between tasks: list_applications and log_application keep a log of jobs applied to (check it to avoid applying twice, and log every application you complete); remember and recall keep short notes worth keeping; memory_file_read and memory_file_append keep longer named files, such as a history or tracker that grows with every run.',
+    'When the task needs the user’s decision — an approval, or a choice between options — call ask_user with the question and the options. It waits for their answer (they get a sound and a notification), and you then carry on with the task in the same run. Ask only when the task needs it, and never ask the same thing twice.',
+    mode === 'auto' && automationHosts.length > 0
+      ? `This task is an automation the user set up. Once they have answered your ask_user question, clicks that send, submit or apply on ${automationHosts.join(', ')} run without a separate prompt, so after their go-ahead do exactly what they approved and nothing more.`
+      : '',
     'For pages that load more as you scroll, use scroll_page. Use press_key for Enter in chat-style forms, go_back to return to a list, and wait when a page is still loading. When a click opens a new tab you are moved to it automatically; tabs you opened for a single job are closed automatically once you log it, and you return to the tab it came from.',
     `Long tasks are fine: you have up to ${MAX_STEPS[mode === 'edit' ? 'edit' : 'auto']} rounds of actions. Keep going until the whole task is done instead of stopping to report part-way.`,
     'When finished, reply with a short summary of what you did and anything the user still needs to do. Use Markdown.'
@@ -141,7 +154,7 @@ const TOOL_DEFS: ToolDef[] = [
   },
   {
     name: 'log_application',
-    description: 'Record a job you applied to (status "applied"), deliberately skipped ("skipped"), that only accepts applications on an external site ("external"), or whose application did not go through ("failed", with the reason in note). After a failure, follow the instructions in the result: LLMRaki retries once and then asks the user.',
+    description: 'Record a job you applied to (status "applied" — only once the site confirms the application went through; the user is alerted for each one), deliberately skipped ("skipped"), that only accepts applications on an external site ("external"), or whose application did not go through ("failed", with the reason in note). After a failure, follow the instructions in the result: LLMRaki retries once and then asks the user.',
     parameters: {
       type: 'object',
       properties: {
@@ -150,6 +163,7 @@ const TOOL_DEFS: ToolDef[] = [
         url: { type: 'string', description: 'Link to the job.' },
         status: { type: 'string', enum: ['applied', 'skipped', 'external', 'failed'], description: 'What happened.' },
         note: { type: 'string', description: 'Why it was skipped or failed (required for "failed": the exact error or problem), or anything to remember.' },
+        goal: { type: 'number', description: 'How many jobs the user asked you to apply to in this task (e.g. 10), if they gave a number — used to show progress like 3/10.' },
         retryable: {
           type: 'boolean',
           description: 'For "failed": false when trying again cannot help — e.g. a required answer is missing from the profile. Default true.'
@@ -167,6 +181,40 @@ const TOOL_DEFS: ToolDef[] = [
     name: 'recall',
     description: 'Read saved notes, optionally only those containing a word or phrase.',
     parameters: { type: 'object', properties: { query: { type: 'string', description: 'Optional filter.' } } }
+  },
+  {
+    name: 'ask_user',
+    description:
+      'Ask the user a question and wait for the answer — for an approval or a choice between options. They can press one of the options or type a reply. Returns their answer; then continue the task.',
+    parameters: {
+      type: 'object',
+      properties: {
+        question: { type: 'string', description: 'The question, with what they need to decide it (e.g. the names an approval covers). Markdown is fine.' },
+        options: {
+          type: 'array',
+          items: { type: 'string' },
+          description: '2 to 6 short answers to choose from, the recommended one first. Leave out for an open question they answer by typing.'
+        }
+      },
+      required: ['question']
+    }
+  },
+  {
+    name: 'memory_file_read',
+    description: 'Read a saved memory file by name (e.g. "colddm-tracker"): a longer history or tracker kept between tasks.',
+    parameters: { type: 'object', properties: { name: { type: 'string', description: 'File name, e.g. "colddm-tracker".' } }, required: ['name'] }
+  },
+  {
+    name: 'memory_file_append',
+    description: 'Add lines to the end of a memory file, creating it if it does not exist yet. Earlier content is kept.',
+    parameters: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'File name, e.g. "colddm-tracker".' },
+        text: { type: 'string', description: 'The lines to add.' }
+      },
+      required: ['name', 'text']
+    }
   },
   {
     name: 'scroll_page',
@@ -244,13 +292,29 @@ export interface AgentCallbacks {
   // Messages the user queued while this run is going; taken (and removed from the queue) between steps.
   takeMessages?: () => string[]
   // Asks the user to pick one of step.choices (with a sound and a notification); resolves to the
-  // index chosen, or to `fallback` if nobody answers within timeoutMs.
+  // index chosen, or to `fallback` if nobody answers within timeoutMs. For a 'question' step, a
+  // message typed meanwhile resolves it with step.choices.length.
   requestChoice?: (
     step: AgentStep,
     alert: { title: string; message: string; context?: string },
     timeoutMs: number,
     fallback: number
   ) => Promise<number>
+  // The user answered an ask_user question.
+  onAnswered?: () => void
+  // An application went through: the count is this task's applications so far, goal how many it asks for.
+  onApplied?: (job: { title: string; company: string; count: number; goal?: number }) => void
+}
+
+export interface AgentOptions {
+  // Why the starting tab can't be worked on (e.g. it's the New Tab page), if it can't.
+  startProblem?: string
+  // The automation this chat runs: sites where its clicks may send/submit without a prompt, which
+  // apply once the user has answered its question (now, or earlier in the chat).
+  automation?: { sites: string[]; approved: boolean }
+  // The task this run belongs to (a continuation keeps the original): its text and when it began,
+  // so applications are counted for the whole task, across continuations.
+  task?: { text: string; startedAt: number }
 }
 
 export async function runAgent(
@@ -259,9 +323,8 @@ export async function runAgent(
   history: ChatMessage[],
   startTabId: number,
   signal: AbortSignal,
-  { onStep, requestApproval, rateLimit = {}, takeMessages, requestChoice }: AgentCallbacks,
-  // Why the starting tab can't be worked on (e.g. it's the New Tab page), if it can't.
-  startProblem?: string
+  { onStep, requestApproval, rateLimit = {}, takeMessages, requestChoice, onAnswered, onApplied }: AgentCallbacks,
+  { startProblem, automation, task }: AgentOptions = {}
 ): Promise<AgentResult> {
   // The tab being worked on; open_url and switch_to_tab move it.
   let tabId = startTabId
@@ -270,8 +333,17 @@ export async function runAgent(
     if (settings.groupTabs !== false) void addTabToGroup(id, mode)
   }
   markControlled(tabId)
-  const wire = toWireMessages(history, systemPrompt(mode, settings, startProblem))
-  const autoHosts = mode === 'auto' ? autoApproveHosts(settings.autoApproveSites ?? []) : []
+  const automationHosts = autoApproveHosts(automation?.sites ?? [])
+  const wire = toWireMessages(history, systemPrompt(mode, settings, startProblem, automationHosts))
+  const settingsHosts = mode === 'auto' ? autoApproveHosts(settings.autoApproveSites ?? []) : []
+  let automationApproved = !!automation?.approved
+  // Sites where Auto may send/submit without asking: the user's own list, plus the automation's
+  // once the user has answered its question.
+  const autoHosts = (): string[] => (mode === 'auto' && automationApproved ? [...settingsHosts, ...automationHosts] : settingsHosts)
+  const NO_ANSWER_TO_QUESTION_MS = 30 * 60 * 1000
+  const taskStartedAt = task?.startedAt ?? Date.now()
+  // How many jobs the task asks for: from the user's words, else from the model once it says.
+  let goal = goalFromTask(task?.text ?? history[history.length - 1]?.content ?? '')
   const skills = allSkills(settings.customSkills ?? [])
   // Tabs LLMRaki opened during this task, and the tab each one came from. Only these are ever
   // closed automatically — never a tab the user opened.
@@ -438,12 +510,13 @@ export async function runAgent(
       const consequential = !!info.submits || IRREVERSIBLE_CLICK.test(info.label ?? '')
       const currentUrl = (await chrome.tabs.get(tabId).catch(() => null))?.url
       // On a site the user listed in Settings, Auto may submit/apply without asking.
-      const preApproved = consequential && mode === 'auto' && siteAllowed(currentUrl, autoHosts)
+      const preApproved = consequential && mode === 'auto' && siteAllowed(currentUrl, autoHosts())
+      const byAutomation = preApproved && !siteAllowed(currentUrl, settingsHosts)
       const needsApproval = mode === 'edit' || (consequential && !preApproved)
       const step = newStep({
         kind: 'click',
         label,
-        ...(preApproved ? { detail: 'Allowed on this site in Settings' } : {}),
+        ...(preApproved ? { detail: byAutomation ? 'Approved for this automation' : 'Allowed on this site in Settings' } : {}),
         status: needsApproval ? 'awaiting' : 'running'
       })
       if (needsApproval && !(await requestApproval(step))) {
@@ -610,9 +683,18 @@ export async function runAgent(
         ...(call.args.note ? { note: String(call.args.note).slice(0, 300) } : {})
       }
       const { duplicate, total } = await logApplication(record)
+      const statedGoal = Math.round(Number(call.args.goal))
+      if (!goal && statedGoal > 0 && statedGoal <= 200) goal = statedGoal
+      // Applications in this task so far (across continuations), for "Applied 3/10".
+      const count =
+        status === 'applied' && !duplicate
+          ? (await loadApplications()).filter((r) => r.status === 'applied' && r.at >= taskStartedAt).length
+          : 0
+      if (count > 0) onApplied?.({ title: record.title, company: record.company, count, goal })
+      const progress = count > 0 ? ` ${count}${goal ? `/${goal}` : ''}` : ''
       newStep({
         kind: 'memory',
-        label: `${status === 'applied' ? 'Logged application' : status === 'external' ? 'Noted external job' : 'Noted skipped job'}: ${record.title} — ${record.company}`,
+        label: `${status === 'applied' ? (duplicate ? 'Already applied' : `Applied${progress}`) : status === 'external' ? 'Noted external job' : 'Noted skipped job'}: ${record.title} — ${record.company}`,
         status: duplicate ? 'failed' : 'done',
         ...(duplicate ? { error: 'Already in the log — not logged twice.' } : {})
       })
@@ -621,7 +703,7 @@ export async function runAgent(
       return (
         (duplicate
           ? 'This job was already logged as applied. Do not apply to it again; move on to another job.'
-          : `Logged. Jobs applied to in total: ${total}.`) + closed
+          : `Logged.${count > 0 ? ` Applied in this task so far: ${count}${goal ? ` of ${goal}` : ''}.` : ''} Jobs applied to in total: ${total}.`) + closed
       )
     }
 
@@ -638,6 +720,89 @@ export async function runAgent(
       const notes = (await loadNotes()).filter((n) => !query || n.text.toLowerCase().includes(query))
       newStep({ kind: 'memory', label: 'Recall notes', detail: `${notes.length} found`, status: 'done' })
       return notes.length ? notes.slice(0, 50).map((n) => `- (${new Date(n.at).toISOString().slice(0, 10)}) ${n.text}`).join('\n') : 'No saved notes.'
+    }
+
+    if (call.name === 'ask_user') {
+      const question = String(call.args.question ?? '').trim().slice(0, 6000)
+      if (!question) return 'Error: give the question to ask.'
+      const options = (Array.isArray(call.args.options) ? call.args.options : [])
+        .map((o) => String(o).trim().slice(0, 120))
+        .filter(Boolean)
+        .slice(0, 6)
+      const choices = options.length >= 2 ? options : []
+      const step = newStep({
+        kind: 'question',
+        label: question,
+        detail: choices.length
+          ? 'Pick one, or type a reply below — anything you type is read with your answer.'
+          : 'Type your answer in the message box below.',
+        choices,
+        status: 'awaiting'
+      })
+      // Index meaning "answered by typing a message" rather than pressing an option.
+      const typed = choices.length
+      const choice = requestChoice
+        ? await requestChoice(
+            step,
+            {
+              title: 'LLMRaki has a question',
+              message: question.replace(/[#*_`>|]/g, '').replace(/\s+/g, ' ').trim(),
+              context: choices.length > 0 && choices.length <= 2 ? 'Answer here or in the side panel' : 'Answer in the LLMRaki side panel'
+            },
+            NO_ANSWER_TO_QUESTION_MS,
+            -1
+          )
+        : -1
+      if (signal.aborted) return 'The user stopped the task.'
+      const written = takeMessages?.() ?? []
+      for (const text of written) newStep({ kind: 'message', label: text, status: 'done' })
+      if (choice < 0 || (choice === typed && written.length === 0)) {
+        update(step, { status: 'denied', detail: 'No answer yet — asked again in the reply', choices: undefined })
+        return (
+          'The user has not answered yet. End this run now: reply with the question and its options so they can answer later. ' +
+          'Their answer will arrive as their next message, and you continue the task from there.'
+        )
+      }
+      automationApproved = true
+      onAnswered?.()
+      const picked = choice < typed ? choices[choice] : undefined
+      update(step, {
+        status: 'done',
+        detail: [picked ? `You chose “${picked}”` : '', written.length ? `You wrote: ${written.join(' · ')}` : ''].filter(Boolean).join(' — '),
+        choices: undefined
+      })
+      return (
+        [picked ? `The user chose: “${picked}”.` : '', written.length ? `The user wrote: ${written.map((w) => `“${w}”`).join(' ')}` : '']
+          .filter(Boolean)
+          .join('\n') + '\nCarry on with the task now, exactly as they answered. Do not ask this again.'
+      )
+    }
+
+    if (call.name === 'memory_file_read') {
+      const name = memoryFileName(String(call.args.name ?? ''))
+      if (!name) return 'Error: give the file name, e.g. "colddm-tracker".'
+      const file = await readMemoryFile(name)
+      newStep({
+        kind: 'memory',
+        label: `Read memory file “${name}”`,
+        detail: file ? `${file.text.split('\n').filter(Boolean).length} lines` : 'not created yet',
+        status: 'done'
+      })
+      if (!file) {
+        const others = (await loadMemoryFiles()).map((f) => f.name)
+        return `There is no memory file "${name}" yet — it is created the first time you add to it with memory_file_append.${others.length ? ` Existing files: ${others.join(', ')}.` : ''}`
+      }
+      return `Memory file "${name}" (last updated ${new Date(file.updatedAt).toISOString().slice(0, 10)}):\n${file.text}`
+    }
+
+    if (call.name === 'memory_file_append') {
+      const name = memoryFileName(String(call.args.name ?? ''))
+      const text = String(call.args.text ?? '').trim()
+      if (!name || !text) return 'Error: give the file name and the text to add.'
+      const file = await appendMemoryFile(name, text)
+      const lines = text.split('\n').filter(Boolean).length
+      newStep({ kind: 'memory', label: `Saved to memory file “${name}”`, detail: `${lines} line${lines === 1 ? '' : 's'} added`, status: 'done' })
+      return `Added to "${name}" (${file.text.length} characters in total).`
     }
 
     if (call.name === 'scroll_page') {
@@ -661,7 +826,7 @@ export async function runAgent(
       const keyRef = String(call.args.ref ?? '')
       // Enter can submit a form, so it gets the same care as a submit click.
       const currentUrl = (await chrome.tabs.get(tabId).catch(() => null))?.url
-      const needsApproval = key === 'Enter' && (mode === 'edit' || !siteAllowed(currentUrl, autoHosts))
+      const needsApproval = key === 'Enter' && (mode === 'edit' || !siteAllowed(currentUrl, autoHosts()))
       const step = newStep({ kind: 'click', label: `Press ${key}`, status: needsApproval ? 'awaiting' : 'running' })
       if (needsApproval && !(await requestApproval(step))) {
         update(step, { status: 'denied' })

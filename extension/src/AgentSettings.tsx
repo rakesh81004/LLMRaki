@@ -4,10 +4,13 @@ import { BUILT_IN_SKILLS, type Skill } from './skills'
 import {
   clearApplications,
   deleteApplication,
+  deleteMemoryFile,
   deleteNote,
   loadApplications,
+  loadMemoryFiles,
   loadNotes,
   type ApplicationRecord,
+  type MemoryFile,
   type MemoryNote
 } from './memory'
 import type { Settings } from './types'
@@ -244,10 +247,13 @@ export function SkillsSection({ draft, update }: Props): JSX.Element {
 export function MemorySection(): JSX.Element {
   const [apps, setApps] = useState<ApplicationRecord[]>([])
   const [notes, setNotes] = useState<MemoryNote[]>([])
+  const [memoryFiles, setMemoryFiles] = useState<MemoryFile[]>([])
+  const [openFile, setOpenFile] = useState<string | null>(null)
   const [showAll, setShowAll] = useState(false)
   useEffect(() => {
     void loadApplications().then(setApps)
     void loadNotes().then(setNotes)
+    void loadMemoryFiles().then(setMemoryFiles)
   }, [])
   const applied = apps.filter((a) => a.status === 'applied').length
   const shown = showAll ? apps : apps.slice(0, 8)
@@ -307,6 +313,37 @@ export function MemorySection(): JSX.Element {
                 <button className="attach-remove" title="Forget this" onClick={() => void deleteNote(n.id).then(setNotes)}>
                   ×
                 </button>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      {memoryFiles.length > 0 && (
+        <>
+          <span className="field-hint">Memory files (histories and trackers kept by automations):</span>
+          <ul className="memory-list">
+            {memoryFiles.map((f) => (
+              <li key={f.name} className="memory-file">
+                <div className="field-row">
+                  <button className="link-button memory-text" onClick={() => setOpenFile(openFile === f.name ? null : f.name)}>
+                    📄 {f.name}
+                  </button>
+                  <span className="memory-date">
+                    {f.text.split('\n').filter(Boolean).length} lines · {new Date(f.updatedAt).toLocaleDateString([], { day: 'numeric', month: 'short' })}
+                  </span>
+                  <button
+                    className="attach-remove"
+                    title="Delete this file"
+                    onClick={() => {
+                      if (confirm(`Delete the memory file “${f.name}”? Automations that use it will start from scratch.`)) {
+                        void deleteMemoryFile(f.name).then(setMemoryFiles)
+                      }
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+                {openFile === f.name && <pre className="memory-file-text">{f.text}</pre>}
               </li>
             ))}
           </ul>

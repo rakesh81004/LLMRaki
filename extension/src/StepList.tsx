@@ -1,3 +1,4 @@
+import Markdown from './Markdown'
 import type { AgentStep } from './types'
 
 interface Props {
@@ -26,6 +27,24 @@ export default function StepList({ steps, onAnswer, onUndo }: Props): JSX.Elemen
             <span className="user-note-label">You, during the task</span>
             <div className="user-note-text">{step.label}</div>
             <span className="user-note-status">Read by LLMRaki</span>
+          </li>
+        ) : step.kind === 'question' ? (
+          // LLMRaki's question (ask_user), shown in full with one button per answer.
+          <li key={step.id} className={`step question ${step.status}`}>
+            <span className="user-note-label">{step.status === 'awaiting' ? 'LLMRaki asks' : 'LLMRaki asked'}</span>
+            <div className="question-text">
+              <Markdown content={step.label} />
+            </div>
+            {step.status === 'awaiting' && (step.choices?.length ?? 0) > 0 && (
+              <div className="question-options">
+                {step.choices!.map((label, i) => (
+                  <button key={label} className={i === 0 ? 'primary-button small' : 'ghost-button small'} onClick={() => onAnswer(step.id, i)}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
+            {step.detail && <div className="step-detail">{step.detail}</div>}
           </li>
         ) : (
         <li key={step.id} className={`step ${step.status}`}>

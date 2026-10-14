@@ -2,12 +2,13 @@
 // Allow/Deny, has finished, or has stopped on an error. The sounds are synthesised with Web Audio,
 // so no audio files ship with the extension.
 
-export type AlertKind = 'approval' | 'done' | 'error'
+// 'applied': one job application went through (its tune climbs with each one in the task).
+export type AlertKind = 'approval' | 'done' | 'error' | 'applied'
 
 let audio: AudioContext | null = null
 
 // Each sound is a short sequence of soft sine notes: [frequency Hz, start s, length s].
-const TUNES: Record<AlertKind, [number, number, number][]> = {
+const TUNES: Record<Exclude<AlertKind, 'applied'>, [number, number, number][]> = {
   // Rising two-note chime, played twice: "your turn".
   approval: [
     [660, 0, 0.16],
@@ -28,12 +29,32 @@ const TUNES: Record<AlertKind, [number, number, number][]> = {
   ]
 }
 
-export function playSound(kind: AlertKind): void {
+// A bright "ding-ding" that starts one step higher on the scale for each application, so you can
+// hear 1, 2, 3… go by; the last one of the task plays a short fanfare instead.
+const APPLIED_SCALE = [523.25, 587.33, 659.25, 783.99, 880, 1046.5, 1174.66, 1318.51, 1567.98, 1760]
+function appliedTune(count: number, goal?: number): [number, number, number][] {
+  if (goal && count >= goal) {
+    return [
+      [523.25, 0, 0.12],
+      [659.25, 0.11, 0.12],
+      [783.99, 0.22, 0.12],
+      [1046.5, 0.33, 0.45]
+    ]
+  }
+  const note = APPLIED_SCALE[(Math.max(1, count) - 1) % APPLIED_SCALE.length]
+  return [
+    [note, 0, 0.1],
+    [note * 1.5, 0.1, 0.28]
+  ]
+}
+
+export function playSound(kind: AlertKind, progress?: { count: number; goal?: number }): void {
   try {
     audio ??= new AudioContext()
     if (audio.state === 'suspended') void audio.resume()
     const start = audio.currentTime + 0.02
-    for (const [frequency, offset, length] of TUNES[kind]) {
+    const tune = kind === 'applied' ? appliedTune(progress?.count ?? 1, progress?.goal) : TUNES[kind]
+    for (const [frequency, offset, length] of tune) {
       const osc = audio.createOscillator()
       const gain = audio.createGain()
       osc.type = 'sine'
@@ -58,12 +79,13 @@ export function notify(
   kind: AlertKind,
   title: string,
   message: string,
-  options: { stepId?: string; context?: string; buttons?: string[] } = {}
+  // id: a notification of its own instead of replacing the last result (one per application).
+  options: { stepId?: string; context?: string; buttons?: string[]; id?: string } = {}
 ): void {
   if (!chrome.notifications) return
   // Anything tied to a step is waiting for the user's answer (Allow/Deny, Try again/Skip…).
   const waiting = !!options.stepId
-  const id = waiting ? APPROVAL_PREFIX + options.stepId : RESULT_ID
+  const id = waiting ? APPROVAL_PREFIX + options.stepId : (options.id ?? RESULT_ID)
   const buttons = options.buttons ?? (kind === 'approval' ? ['Allow', 'Deny'] : [])
   // Our own sound plays from the panel, so the system notification is silent to avoid a double chime.
   void chrome.notifications.clear(id).then(() =>
