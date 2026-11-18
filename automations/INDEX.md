@@ -25,6 +25,9 @@ trigger: CODE COLDDM         # typing this in a message runs the automation
 mode: auto                   # ask | edit | auto — the mode it runs in
 autoApprove: linkedin.com    # optional: sites where, once you've answered its question, its
                              # send/submit clicks run without a prompt for each one
+                             # ("*" = any site)
+pinned: true                 # optional: it lives in its own permanent pinned chat (see below)
+intro: Shown in that pinned chat before the first message.
 description: One sentence on what it does and when to use it.
 media:                       # files from this folder attached on every run
   - media/My Resume.pdf
@@ -40,6 +43,7 @@ the built extension, but are never pushed.
 | Trigger | Folder | What it does |
 |---|---|---|
 | `CODE COLDDM` | `code-colddm/` | Finds fresh LinkedIn hiring managers in Bengaluru and Chennai who can hire Rakesh and are likely to reply; ranks them with evidence; asks one approval question, then sends connection invites with the note to everyone approved. Keeps its history in the `colddm-tracker` memory file. Auto-approves on linkedin.com after the answer. Media: résumé. |
+| `CODE FILL` | `application-filler/` | **Pinned chat.** Paste an application link: it opens the form, fills every field from your résumé and everything you've shared in that chat, uploads the résumé, and submits after you say "Submit". Media: résumé. |
 | `CODE APPLY` | `job-auto-apply/` | Finds fresh, well-matched jobs on Naukri and LinkedIn Easy Apply from the résumé, gets approval on a shortlist with the filled answers, applies with verified complete answers, then finds 3 LinkedIn referral contacts per company (v1.3). Media: résumé. |
 
 ## How a run goes
@@ -54,6 +58,14 @@ the built extension, but are never pushed.
   its files again. A new chat starts fresh.
 - **Trackers** — a history file the instructions mention (such as `colddm-tracker`) is kept as a
   memory file in the extension. You can view and delete it in Settings → Memory.
+
+- **Pinned automations** (`pinned: true`) — these get their own permanent chat, shown with 📌 at the
+  top of the start screen and of History. Every message in it runs the automation. Everything you
+  share there (messages, files such as a résumé, answers you type during a run) is sent along with
+  every request, so it's remembered for good. Typing the trigger word in another chat moves the
+  message to that pinned chat. Any chat can also be pinned with the pin button at the top.
+- **Uploads** — PDF and Word files you share (and an automation's media) can be put into a form's
+  upload field, such as a résumé upload.
 
 Automations can also be created inside the extension (Settings → Automations → Add automation);
 those are stored in the browser rather than in this folder.

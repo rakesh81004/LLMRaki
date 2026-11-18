@@ -21,7 +21,10 @@ export async function loadConversations(): Promise<Conversation[]> {
 
 export async function saveConversation(conversation: Conversation): Promise<Conversation[]> {
   const list = (await loadConversations()).filter((c) => c.id !== conversation.id)
-  const next = [conversation, ...list].slice(0, MAX_CONVERSATIONS)
+  // Pinned chats are permanent: only ordinary chats make way when there are too many.
+  const all = [conversation, ...list]
+  const pinned = all.filter((c) => c.pinned)
+  const next = [...pinned, ...all.filter((c) => !c.pinned).slice(0, Math.max(0, MAX_CONVERSATIONS - pinned.length))]
   await chrome.storage.local.set({ [CONVERSATIONS_KEY]: next })
   return next
 }

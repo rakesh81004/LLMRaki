@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import Markdown from './Markdown'
-import { HistoryIcon, PaperclipIcon, PlusIcon, SettingsIcon } from './Icons'
+import { HistoryIcon, PaperclipIcon, PinIcon, PlusIcon, SettingsIcon } from './Icons'
 import { PendingChips, SentAttachments, type PendingFile } from './AttachmentChips'
 import { ACCEPT, MAX_FILES, readAttachment } from './attachments'
 import { restartExtension, updateWaiting } from './updates'
@@ -11,6 +11,7 @@ import SettingsView from './SettingsView'
 import HistoryView from './HistoryView'
 import StepList from './StepList'
 import { runAgent, undoFill } from './agent'
+import { pinnedHistory, pinnedMemory, uploadableFiles, withoutFileBytes } from './pinned'
 import GeminiSetup from './GeminiSetup'
 import { APPROVAL_PREFIX, clearApprovalNotification, notify, plainText, playSound, type AlertKind } from './alerts'
 import { activeModel, listOllamaModels, PROVIDER_LABELS } from './providers'
@@ -24,7 +25,7 @@ import {
 } from './pageContext'
 import type { TabTarget } from './pageContext'
 import { deleteConversation, loadConversations, loadSettings, saveConversation, saveSettings } from './storage'
-import type { AgentStep, ChatMessage, Conversation, Mode, PageContext, Settings } from './types'
+import type { AgentStep, Attachment, ChatMessage, Conversation, Mode, PageContext, Settings } from './types'
 
 type View = 'chat' | 'history' | 'settings' | 'setup' | 'backups'
 
@@ -65,9 +66,28 @@ const MODE_RGB: Record<Mode, string> = {
   auto: '255, 140, 0'
 }
 
+const NEW_CHAT_TITLE = 'New chat'
+// Automations whose pinned chat has been made once, so a deleted one isn't brought back unasked.
+const PINNED_CREATED_KEY = 'pinnedChatsCreated'
+
 function newConversation(): Conversation {
   const now = Date.now()
-  return { id: crypto.randomUUID(), title: 'New chat', createdAt: now, updatedAt: now, messages: [] }
+  return { id: crypto.randomUUID(), title: NEW_CHAT_TITLE, createdAt: now, updatedAt: now, messages: [] }
+}
+
+// Top of a pinned chat: what it remembers and uses on every message.
+function PinnedBanner({ conversation, automation }: { conversation: Conversation; automation?: AutomationInfo }): JSX.Element {
+  const memory = pinnedMemory(conversation.messages)
+  const parts = [
+    memory.notes.length ? `${memory.notes.length} message${memory.notes.length === 1 ? '' : 's'}` : '',
+    ...memory.files.map((f) => `📎 ${f.name}`)
+  ].filter(Boolean)
+  return (
+    <div className="pinned-banner">
+      <strong>📌 Pinned{automation ? ` · runs ${automation.title}` : ''}</strong> — everything you share here is remembered and used every time.
+      {parts.length > 0 && <div className="pinned-banner-memory">Remembering: {parts.join(' · ')}</div>}
+    </div>
+  )
 }
 
 function titleFrom(text: string): string {
@@ -146,8 +166,26 @@ export default function App(): JSX.Element {
         setView('settings')
       }
     })
-    void loadConversations().then(setConversations)
+    void loadConversations().then((list) => {
+      setConversations(list)
+      setConversationsLoaded(true)
+    })
   }, [])
+
+  // An automation marked "pinned" lives in a permanent chat of its own, created the first time.
+  // (If the user deletes it, it isn't recreated until they run the automation again.)
+  const [conversationsLoaded, setConversationsLoaded] = useState(false)
+  useEffect(() => {
+    if (!conversationsLoaded) return
+    void (async () => {
+      const stored = await chrome.storage.local.get(PINNED_CREATED_KEY)
+      const created = (stored[PINNED_CREATED_KEY] as string[] | undefined) ?? []
+      for (const a of builtInAutomations.filter((a) => a.pinned && !created.includes(a.name))) {
+        if (!conversations.some((c) => c.pinned && c.automation === a.name)) await createPinnedChat(a)
+        else await chrome.storage.local.set({ [PINNED_CREATED_KEY]: [...created, a.name] })
+      }
+    })()
+  }, [conversationsLoaded, builtInAutomations])
 
   // A newer build on disk than the one Chrome is running: restart straight away when the panel
   // opens (nothing is in progress yet); while it stays open, offer a restart instead of interrupting.
@@ -265,28 +303,55 @@ export default function App(): JSX.Element {
         : queued?.automation
           ? automations.find((a) => a.name === queued.automation)
           : findTriggered(text, automations)
-      if (automation) {
+      // An automation that lives in a pinned chat always runs there: the message moves to that chat.
+      const pinnedHere = (a: AutomationInfo): boolean => !!conversation.pinned && conversation.automation === a.name
+      if (automation?.pinned && !pinnedHere(automation)) {
+        const home = await pinnedChatFor(automation)
+        stop()
+        setConversation(home)
+        setView('chat')
+        if (!queued) {
+          setInput('')
+          setFiles([])
+          setAttachPage(false)
+        }
+        queueRef.current = [{ id: crypto.randomUUID(), text, ...(ready.length ? { attachments: ready } : {}), ...(page ? { attachPage: true } : {}) }, ...queueRef.current]
+        setQueue(queueRef.current)
+        setQueuePaused(false)
+        return
+      }
+      // In a pinned automation chat, every message runs under its automation. Its instructions and
+      // media are attached fresh each time rather than saved into the chat.
+      const pinnedRun = conversation.pinned ? automations.find((a) => a.name === conversation.automation) : undefined
+      const startsAutomation = automation && !(pinnedRun && automation.name === pinnedRun.name) ? automation : undefined
+      let extra: Attachment[] = []
+      const running = startsAutomation ?? pinnedRun
+      if (running) {
         try {
-          ready = [...(await prepareAutomation(automation)), ...ready]
+          const prepared = await prepareAutomation(running)
+          if (startsAutomation) ready = [...prepared, ...ready]
+          else extra = prepared
         } catch (err) {
           cantStart(err instanceof Error ? err.message : String(err))
           return
         }
-        if (automation.mode !== settings.mode) {
-          const next = { ...settings, mode: automation.mode }
+        if (running.mode !== settings.mode) {
+          const next = { ...settings, mode: running.mode }
           setSettings(next)
           void saveSettings(next)
         }
       }
 
-      const mode = automation?.mode ?? settings.mode
+      const mode = running?.mode ?? settings.mode
       // The automation this chat runs under: one started now, or the one the chat began with, so
       // replies to its question carry on with the same rules. Its auto-approved sites apply once the
       // user has answered its question — a typed reply to it counts too.
-      const chatAutomation = automation ?? automations.find((a) => a.name === conversation.automation)
-      let automationApproved = automation
-        ? false
-        : !!chatAutomation && (!!conversation.automationApproved || (!queued?.continuation && conversation.messages.length > 0))
+      const chatAutomation = running ?? automations.find((a) => a.name === conversation.automation)
+      // In a pinned chat each message is a new piece of work, so its go-ahead is asked for afresh.
+      let automationApproved =
+        startsAutomation || conversation.pinned
+          ? false
+          : !!chatAutomation && (!!conversation.automationApproved || (!queued?.continuation && conversation.messages.length > 0))
       // Edit and Auto start on the tab that was in front when the message was sent, even if the user
       // switches tabs mid-run. From a browser page (New Tab, Settings…) they get to a website themselves.
       let tabId: number | undefined
@@ -316,10 +381,14 @@ export default function App(): JSX.Element {
         ...(ready.length ? { attachments: ready } : {})
       }
       const history = [...conversation.messages, userMessage]
+      // What the model gets: in a pinned chat, everything shared in it plus the last few turns.
+      const modelHistory = conversation.pinned ? pinnedHistory(conversation.messages, userMessage, extra) : history
+      // The user's own files (résumé…) that can go into upload fields on a form.
+      const uploads = uploadableFiles([ready, extra, conversation.pinned ? pinnedMemory(conversation.messages).files : []])
       const pending: ChatMessage = { role: 'assistant', content: '', mode, ...(mode !== 'ask' ? { steps: [] } : {}) }
       const base: Conversation = {
         ...conversation,
-        title: conversation.messages.length === 0 ? titleFrom(text) : conversation.title,
+        title: conversation.messages.length === 0 && conversation.title === NEW_CHAT_TITLE ? titleFrom(text) : conversation.title,
         updatedAt: Date.now(),
         messages: [...history, pending],
         ...(chatAutomation ? { automation: chatAutomation.name, automationApproved } : {})
@@ -385,12 +454,12 @@ export default function App(): JSX.Element {
 
       try {
         if (mode === 'ask') {
-          for await (const chunk of streamChat(settings, history, controller.signal, rateLimit)) {
+          for await (const chunk of streamChat(settings, modelHistory, controller.signal, rateLimit)) {
             reply += chunk
             show(reply)
           }
         } else {
-          const result = await runAgent(settings, mode, history, tabId!, controller.signal, {
+          const result = await runAgent(settings, mode, modelHistory, tabId!, controller.signal, {
             onStep: (step) => {
               const i = steps.findIndex((s) => s.id === step.id)
               if (i === -1) steps.push(step)
@@ -450,7 +519,10 @@ export default function App(): JSX.Element {
           }, {
             startProblem,
             task: { text: task, startedAt: taskStartedAt },
-            ...(chatAutomation?.autoApprove?.length ? { automation: { sites: chatAutomation.autoApprove, approved: automationApproved } } : {})
+            uploads,
+            ...(chatAutomation?.autoApprove?.length || chatAutomation?.approval
+              ? { automation: { sites: chatAutomation.autoApprove ?? [], approved: automationApproved, approval: chatAutomation.approval } }
+              : {})
           })
           reply = result.text
           hitLimit = !!result.hitLimit
@@ -506,19 +578,53 @@ export default function App(): JSX.Element {
         messages: keep ? [...history, saved] : history,
         ...(chatAutomation ? { automationApproved } : {})
       }
-      setConversations(await saveConversation(toSave))
+      setConversations(await saveConversation(withoutFileBytes(toSave)))
       if (willContinue()) setAutoContinue({ until: Date.now() + AUTO_CONTINUE_SECONDS * 1000, task, count: continueCount + 1, startedAt: taskStartedAt })
       } finally {
         // Only now is the run fully over (reply shown and saved), so a queued message can start.
         setStreaming(false)
       }
     },
-    [settings, streaming, attachPage, conversation, files, automations]
+    [settings, streaming, attachPage, conversation, conversations, files, automations]
   )
+
+  // ---- Pinned chats ----
+
+  const createPinnedChat = async (automation: AutomationInfo): Promise<Conversation> => {
+    const chat: Conversation = { ...newConversation(), title: automation.title, pinned: true, automation: automation.name }
+    setConversations(await saveConversation(chat))
+    const stored = await chrome.storage.local.get(PINNED_CREATED_KEY)
+    const created = (stored[PINNED_CREATED_KEY] as string[] | undefined) ?? []
+    if (!created.includes(automation.name)) await chrome.storage.local.set({ [PINNED_CREATED_KEY]: [...created, automation.name] })
+    return chat
+  }
+
+  // The automation's pinned chat, created if it doesn't exist (any more).
+  const pinnedChatFor = async (automation: AutomationInfo): Promise<Conversation> =>
+    conversations.find((c) => c.pinned && c.automation === automation.name) ?? (await createPinnedChat(automation))
+
+  const openChat = (chat: Conversation): void => {
+    stop()
+    clearQueue()
+    setConversation(chat)
+    setView('chat')
+    setNotice(null)
+  }
+
+  const togglePin = async (): Promise<void> => {
+    const next = { ...conversation, pinned: !conversation.pinned }
+    setConversation(next)
+    if (next.messages.length > 0) setConversations(await saveConversation(withoutFileBytes(next)))
+  }
 
   const runAutomation = (name: string): void => {
     const automation = automations.find((a) => a.name === name)
     if (!automation) return
+    // One that lives in a pinned chat: open that chat, ready for a link or details.
+    if (automation.pinned) {
+      void pinnedChatFor(automation).then(openChat)
+      return
+    }
     setView('chat')
     const text = automation.trigger || `Run the ${automation.title} automation`
     const item = { id: crypto.randomUUID(), text, automation: name }
@@ -720,6 +826,7 @@ export default function App(): JSX.Element {
     clearQueue()
     setConversation(newConversation())
     setView('chat')
+    setView('chat')
     setNotice(null)
     textareaRef.current?.focus()
   }
@@ -784,12 +891,7 @@ export default function App(): JSX.Element {
           conversations={conversations}
           activeId={conversation.id}
           onClose={() => setView('chat')}
-          onOpen={(c) => {
-            stop()
-            clearQueue()
-            setConversation(c)
-            setView('chat')
-          }}
+          onOpen={openChat}
           onDelete={(id) => {
             void deleteConversation(id).then(setConversations)
             if (id === conversation.id) setConversation(newConversation())
@@ -801,6 +903,7 @@ export default function App(): JSX.Element {
 
   const empty = conversation.messages.length === 0
   const agentMode = settings.mode !== 'ask'
+  const pinnedAutomation = conversation.pinned ? automations.find((a) => a.name === conversation.automation) : undefined
 
   return (
     <div
@@ -825,8 +928,15 @@ export default function App(): JSX.Element {
       <header className="topbar">
         <img src="icons/icon32.png" alt="" className="topbar-logo" />
         <span className="topbar-title" title={conversation.title}>
-          {empty ? 'LLMRaki' : conversation.title}
+          {conversation.pinned ? `📌 ${conversation.title}` : empty ? 'LLMRaki' : conversation.title}
         </span>
+        <button
+          className={`icon-button${conversation.pinned ? ' active' : ''}`}
+          title={conversation.pinned ? 'Unpin this chat' : 'Pin this chat — everything you share in it is remembered and used every time'}
+          onClick={() => void togglePin()}
+        >
+          <PinIcon filled={!!conversation.pinned} />
+        </button>
         <button className="icon-button" title="New chat" onClick={startNewChat}>
           <PlusIcon />
         </button>
@@ -839,13 +949,30 @@ export default function App(): JSX.Element {
       </header>
 
       <div className="messages" ref={scrollRef} onScroll={onScroll}>
-        {empty ? (
+        {conversation.pinned && <PinnedBanner conversation={conversation} automation={pinnedAutomation} />}
+        {empty && pinnedAutomation ? (
+          <div className="empty-state">
+            <p>{pinnedAutomation.intro || pinnedAutomation.description}</p>
+          </div>
+        ) : empty ? (
           <div className="empty-state">
             <img src="icons/icon128.png" alt="" />
             <p>{EMPTY_TEXT[settings.mode]}</p>
+            {conversations.some((c) => c.pinned) && (
+              <div className="automation-chips">
+                {conversations
+                  .filter((c) => c.pinned)
+                  .map((c) => (
+                    <button key={c.id} className="automation-chip pinned-chip" title="Open this pinned chat" onClick={() => openChat(c)}>
+                      📌 {c.title}
+                    </button>
+                  ))}
+              </div>
+            )}
             {automations.length > 0 && (
               <div className="automation-chips">
-                {automations.map((a) => (
+                {/* One with a pinned chat is opened from its 📌 chip instead. */}
+                {automations.filter((a) => !(a.pinned && conversations.some((c) => c.pinned && c.automation === a.name))).map((a) => (
                   <button key={a.name} className="automation-chip" title={a.description} onClick={() => runAutomation(a.name)}>
                     ▶ {a.title}
                   </button>

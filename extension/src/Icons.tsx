@@ -52,3 +52,12 @@ export function SettingsIcon(): JSX.Element {
     </svg>
   )
 }
+
+export function PinIcon({ filled = false }: { filled?: boolean }): JSX.Element {
+  return (
+    <svg {...common} fill={filled ? 'currentColor' : 'none'}>
+      <path d="M6 2.5h4l-.6 3.6 2.1 2.1v1.3H4.5V8.2l2.1-2.1L6 2.5z" />
+      <path d="M8 9.5v4" />
+    </svg>
+  )
+}

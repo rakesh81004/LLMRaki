@@ -31,6 +31,20 @@ export function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
+// The original document is kept (up to this size) so it can be uploaded to an application form.
+const MAX_KEPT_FILE_BYTES = 5 * 1024 * 1024
+
+async function base64Of(file: File): Promise<string> {
+  const bytes = new Uint8Array(await file.arrayBuffer())
+  let binary = ''
+  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
+  return btoa(binary)
+}
+
+async function withFile(attachment: Attachment, file: File): Promise<Attachment> {
+  return file.size <= MAX_KEPT_FILE_BYTES ? { ...attachment, file: await base64Of(file) } : attachment
+}
+
 function capText(name: string, size: number, mimeType: string, raw: string): Attachment {
   const text = raw.replace(/\r\n/g, '\n').replace(/\n{4,}/g, '\n\n\n').trim()
   if (!text) throw new Error(`“${name}” has no readable text.`)
@@ -118,8 +132,13 @@ export async function readAttachment(file: File): Promise<Attachment> {
   if (IMAGE_TYPES.includes(file.type) || (file.type.startsWith('image/') && file.type !== 'image/svg+xml')) {
     return readImage(file)
   }
-  if (ext === 'pdf' || file.type === 'application/pdf') return capText(file.name, file.size, 'application/pdf', await readPdf(file))
-  if (ext === 'docx') return capText(file.name, file.size, file.type, await readDocx(file))
+  if (ext === 'pdf' || file.type === 'application/pdf') {
+    return withFile(capText(file.name, file.size, 'application/pdf', await readPdf(file)), file)
+  }
+  if (ext === 'docx') {
+    const mimeType = file.type || 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    return withFile(capText(file.name, file.size, mimeType, await readDocx(file)), file)
+  }
   if (ext === 'doc') throw new Error(`“${file.name}” is an old Word format (.doc). Save it as .docx or PDF and attach that.`)
   if (TEXT_EXTENSIONS.includes(ext) || file.type.startsWith('text/') || ext === 'svg') {
     return capText(file.name, file.size, file.type || 'text/plain', await file.text())

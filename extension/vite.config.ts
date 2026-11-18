@@ -83,6 +83,11 @@ function bundleAutomations(): Plugin {
             description: header.description || '',
             // e.g. "autoApprove: linkedin.com, naukri.com"
             autoApprove: (header.autoApprove || '').split(',').map((s) => s.trim()).filter(Boolean),
+            // "pinned: true": it lives in a permanent pinned chat that remembers everything shared in it.
+            pinned: header.pinned === 'true',
+            // "approval: final": only the final submit is ever checked, so the user is asked once.
+            ...(header.approval === 'final' ? { approval: 'final' } : {}),
+            intro: header.intro || '',
             instructions: `automations/${folder}/AUTOMATION.md`,
             media: bundledMedia
           })

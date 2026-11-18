@@ -30,13 +30,23 @@ export default function HistoryView({ conversations, activeId, onOpen, onDelete,
         <p className="field-hint">No saved chats yet.</p>
       ) : (
         <ul className="history-list">
-          {conversations.map((c) => (
+          {/* Pinned chats first. */}
+          {[...conversations.filter((c) => c.pinned), ...conversations.filter((c) => !c.pinned)].map((c) => (
             <li key={c.id} className={c.id === activeId ? 'active' : ''}>
               <button className="history-open" onClick={() => onOpen(c)} title={c.title}>
-                <span className="history-title">{c.title}</span>
+                <span className="history-title">
+                  {c.pinned ? '📌 ' : ''}
+                  {c.title}
+                </span>
                 <span className="history-when">{formatWhen(c.updatedAt)}</span>
               </button>
-              <button className="history-delete" title="Delete chat" onClick={() => onDelete(c.id)}>
+              <button
+                className="history-delete"
+                title="Delete chat"
+                onClick={() => {
+                  if (!c.pinned || confirm(`Delete the pinned chat “${c.title}”? Everything LLMRaki remembers from it goes too.`)) onDelete(c.id)
+                }}
+              >
                 ×
               </button>
             </li>

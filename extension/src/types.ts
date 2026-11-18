@@ -108,6 +108,9 @@ export interface Attachment {
   text?: string
   truncated?: boolean
   data?: string
+  // The original file (base64) for PDFs and Word files, so it can be uploaded to a form. Kept only
+  // in pinned chats and for the run itself — not saved with ordinary chats.
+  file?: string
 }
 
 export interface ChatMessage {
@@ -133,4 +136,7 @@ export interface Conversation {
   automation?: string
   // Set once the user has answered the automation's question, which turns on its auto-approved sites.
   automationApproved?: boolean
+  // A permanent chat: kept at the top, never pushed out of history, and everything the user shares
+  // in it (messages, files, answers) is sent along with every request in it.
+  pinned?: boolean
 }

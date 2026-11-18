@@ -13,6 +13,12 @@ export interface AutomationInfo {
   description: string
   // Sites where its clicks may send/submit without a prompt, once the user has answered its question.
   autoApprove?: string[]
+  // Lives in a permanent pinned chat of its own, where everything the user shares is remembered.
+  pinned?: boolean
+  // 'final': in Auto, only a final submit click is checked (asked once, via its question).
+  approval?: 'final'
+  // Shown in its pinned chat before the first message.
+  intro?: string
   builtIn: boolean
   // Built-in: paths inside the extension. Yours: the instructions text and files themselves.
   instructionsPath?: string
@@ -43,6 +49,9 @@ export async function loadBuiltInAutomations(): Promise<AutomationInfo[]> {
       mode: Mode
       description: string
       autoApprove?: string[]
+      pinned?: boolean
+      approval?: 'final'
+      intro?: string
       instructions: string
       media: { name: string; path: string }[]
     }[]

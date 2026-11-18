@@ -1,5 +1,5 @@
 import { toWireMessages } from './providers'
-import { clickElement, fillField, inspectClick, pressKey, scrollPage, snapshotPage, waitForPageSettled } from './pageTools'
+import { clickElement, fillField, inspectClick, pageSignature, pressKey, scrollPage, snapshotPage, uploadFile, waitForPageChange, waitForPageSettled } from './pageTools'
 import { allSkills, skillIndex } from './skills'
 import { addNote, appendMemoryFile, loadApplications, loadMemoryFiles, loadNotes, logApplication, memoryFileName, normalizeJobUrl, readMemoryFile } from './memory'
 import { addTabToGroup } from './tabGroup'
@@ -23,6 +23,10 @@ export function goalFromTask(text: string): number | undefined {
   return n > 0 && n <= 200 ? n : undefined
 }
 
+// For automations that ask once (approval: final), only a click that finally submits is checked —
+// Apply, Next, Continue and Review just move through the form.
+const FINAL_SUBMIT_CLICK = /\b(submit|send|finish|complete|pay|purchase|buy|checkout|delete|place order)\b/i
+
 // The sites where the user lets Auto mode submit without asking, cleaned to bare host names.
 export function autoApproveHosts(sites: string[]): string[] {
   return sites
@@ -34,19 +38,33 @@ function siteAllowed(url: string | undefined, hosts: string[]): boolean {
   if (!url) return false
   try {
     const host = new URL(url).hostname.replace(/^www\./, '')
-    return hosts.some((h) => host === h || host.endsWith('.' + h))
+    // "*" means any site.
+    return hosts.some((h) => h === '*' || host === h || host.endsWith('.' + h))
   } catch {
     return false
   }
 }
 
-function systemPrompt(mode: Mode, settings: Settings, startProblem?: string, automationHosts: string[] = []): string {
+// "linkedin.com, naukri.com", or "any site" for "*".
+const siteList = (hosts: string[]): string => (hosts.includes('*') ? 'any site' : hosts.join(', '))
+
+function systemPrompt(
+  mode: Mode,
+  settings: Settings,
+  startProblem?: string,
+  automationHosts: string[] = [],
+  uploadNames: string[] = [],
+  currentTab?: { title: string; url: string },
+  finalOnly = false
+): string {
   const hosts = autoApproveHosts(settings.autoApproveSites ?? [])
   const clickRule =
     mode === 'edit'
       ? 'Every click you make is shown to the user for approval first.'
-      : 'Clicks run immediately, except ones that submit a form or send, pay, buy, delete, apply or post — those are shown to the user for approval first' +
-        (hosts.length > 0 ? `, except on ${hosts.join(', ')}, where the user has allowed them to run without asking.` : '.')
+      : finalOnly
+        ? 'Clicks run immediately — Apply, Next, Continue, Review and the like never wait for the user. Only a final Submit/Send click waits for approval, and not even that once the user has answered your ask_user question.'
+        : 'Clicks run immediately, except ones that submit a form or send, pay, buy, delete, apply or post — those are shown to the user for approval first' +
+          (hosts.length > 0 ? `, except on ${siteList(hosts)}, where the user has allowed them to run without asking.` : '.')
   const skills = allSkills(settings.customSkills ?? [])
   const navigateRule =
     mode === 'edit'
@@ -62,7 +80,11 @@ function systemPrompt(mode: Mode, settings: Settings, startProblem?: string, aut
     `Use click for buttons, links, tabs and menus. ${clickRule}`,
     `To get to a different website, use list_tabs and switch_to_tab for one of the user's open tabs, or open_url to open a site. ${navigateRule}`,
     start,
+    currentTab
+      ? `The tab in front when the user sent this message: "${currentTab.title}" (${currentTab.url}). When they say "this page", "this form" or "here", or the task's link is already open there, work on that tab — call read_page first instead of opening it again.`
+      : '',
     'The results of click, open_url and switch_to_tab already include the page as it is afterwards, so you do not need to call read_page after them; refs from an old page may no longer exist.',
+    'Check the page after every click before your next step. If a click result says the page did not change, call wait and then read_page — a form or dialog may still be appearing — and never click the same button twice in a row.',
     'Requests are rate-limited, so do as much as you can per turn: when filling a form, make all the fill_field calls in one turn.',
     'Fill forms only with information the user gave you or that is already on the page. If something required is missing, stop and ask the user — never invent personal details.',
     'Password and payment-card fields are always left for the user to fill in; tell them when one needs their input.',
@@ -73,8 +95,11 @@ function systemPrompt(mode: Mode, settings: Settings, startProblem?: string, aut
     'Memory persists between tasks: list_applications and log_application keep a log of jobs applied to (check it to avoid applying twice, and log every application you complete); remember and recall keep short notes worth keeping; memory_file_read and memory_file_append keep longer named files, such as a history or tracker that grows with every run.',
     'When the task needs the user’s decision — an approval, or a choice between options — call ask_user with the question and the options. It waits for their answer (they get a sound and a notification), and you then carry on with the task in the same run. Ask only when the task needs it, and never ask the same thing twice.',
     mode === 'auto' && automationHosts.length > 0
-      ? `This task is an automation the user set up. Once they have answered your ask_user question, clicks that send, submit or apply on ${automationHosts.join(', ')} run without a separate prompt, so after their go-ahead do exactly what they approved and nothing more.`
+      ? `This task is an automation the user set up. Once they have answered your ask_user question, clicks that send, submit or apply on ${siteList(automationHosts)} run without a separate prompt, so after their go-ahead do exactly what they approved and nothing more.`
       : '',
+    uploadNames.length > 0
+      ? `For file upload fields (type "file" in read_page), use upload_file with one of the user's files: ${uploadNames.map((n) => `"${n}"`).join(', ')}.`
+      : 'You have none of the user’s files to upload; if a form needs one, tell the user which upload field is left for them.',
     'For pages that load more as you scroll, use scroll_page. Use press_key for Enter in chat-style forms, go_back to return to a list, and wait when a page is still loading. When a click opens a new tab you are moved to it automatically; tabs you opened for a single job are closed automatically once you log it, and you return to the tab it came from.',
     `Long tasks are fine: you have up to ${MAX_STEPS[mode === 'edit' ? 'edit' : 'auto']} rounds of actions. Keep going until the whole task is done instead of stopping to report part-way.`,
     'When finished, reply with a short summary of what you did and anything the user still needs to do. Use Markdown.'
@@ -181,6 +206,18 @@ const TOOL_DEFS: ToolDef[] = [
     name: 'recall',
     description: 'Read saved notes, optionally only those containing a word or phrase.',
     parameters: { type: 'object', properties: { query: { type: 'string', description: 'Optional filter.' } } }
+  },
+  {
+    name: 'upload_file',
+    description: "Put one of the user's files (such as their résumé PDF) into a file upload field on the page.",
+    parameters: {
+      type: 'object',
+      properties: {
+        ref: { type: 'string', description: 'Ref of the file upload field (type "file") from read_page.' },
+        file_name: { type: 'string', description: 'Name of the file to upload, from the list in your instructions.' }
+      },
+      required: ['ref', 'file_name']
+    }
   },
   {
     name: 'ask_user',
@@ -310,11 +347,14 @@ export interface AgentOptions {
   // Why the starting tab can't be worked on (e.g. it's the New Tab page), if it can't.
   startProblem?: string
   // The automation this chat runs: sites where its clicks may send/submit without a prompt, which
-  // apply once the user has answered its question (now, or earlier in the chat).
-  automation?: { sites: string[]; approved: boolean }
+  // apply once the user has answered its question (now, or earlier in the chat). approval 'final':
+  // only a final submit click is ever checked, so the user is asked once per piece of work.
+  automation?: { sites: string[]; approved: boolean; approval?: 'final' }
   // The task this run belongs to (a continuation keeps the original): its text and when it began,
   // so applications are counted for the whole task, across continuations.
   task?: { text: string; startedAt: number }
+  // The user's files that can be put into upload fields (their original bytes, base64).
+  uploads?: { name: string; mimeType: string; data: string }[]
 }
 
 export async function runAgent(
@@ -324,7 +364,7 @@ export async function runAgent(
   startTabId: number,
   signal: AbortSignal,
   { onStep, requestApproval, rateLimit = {}, takeMessages, requestChoice, onAnswered, onApplied }: AgentCallbacks,
-  { startProblem, automation, task }: AgentOptions = {}
+  { startProblem, automation, task, uploads = [] }: AgentOptions = {}
 ): Promise<AgentResult> {
   // The tab being worked on; open_url and switch_to_tab move it.
   let tabId = startTabId
@@ -334,7 +374,13 @@ export async function runAgent(
   }
   markControlled(tabId)
   const automationHosts = autoApproveHosts(automation?.sites ?? [])
-  const wire = toWireMessages(history, systemPrompt(mode, settings, startProblem, automationHosts))
+  const finalOnly = mode === 'auto' && automation?.approval === 'final'
+  const startTab = await chrome.tabs.get(startTabId).catch(() => null)
+  const currentTab = startTab && isWorkableUrl(startTab.url) ? { title: startTab.title ?? '', url: startTab.url } : undefined
+  const wire = toWireMessages(
+    history,
+    systemPrompt(mode, settings, startProblem, automationHosts, uploads.map((u) => u.name), currentTab, finalOnly)
+  )
   const settingsHosts = mode === 'auto' ? autoApproveHosts(settings.autoApproveSites ?? []) : []
   let automationApproved = !!automation?.approved
   // Sites where Auto may send/submit without asking: the user's own list, plus the automation's
@@ -458,7 +504,7 @@ export async function runAgent(
 
   const runTool = async (call: ToolCall): Promise<string> => {
     const ref = String(call.args.ref ?? '')
-    if ((call.name === 'fill_field' || call.name === 'click') && !ref) {
+    if ((call.name === 'fill_field' || call.name === 'click' || call.name === 'upload_file') && !ref) {
       const error = 'No element ref was given. Call read_page and use one of its refs, such as "e12".'
       newStep({ kind: call.name === 'click' ? 'click' : 'fill', label: call.name === 'click' ? 'Click' : 'Fill', status: 'failed', error })
       return `Error: ${error}`
@@ -507,7 +553,7 @@ export async function runAgent(
         return `Error: ${info.error}`
       }
       const label = `Click “${info.label || ref}”`
-      const consequential = !!info.submits || IRREVERSIBLE_CLICK.test(info.label ?? '')
+      const consequential = finalOnly ? FINAL_SUBMIT_CLICK.test(info.label ?? '') : !!info.submits || IRREVERSIBLE_CLICK.test(info.label ?? '')
       const currentUrl = (await chrome.tabs.get(tabId).catch(() => null))?.url
       // On a site the user listed in Settings, Auto may submit/apply without asking.
       const preApproved = consequential && mode === 'auto' && siteAllowed(currentUrl, autoHosts())
@@ -530,6 +576,7 @@ export async function runAgent(
         if (t.id !== undefined && t.openerTabId === tabId) newTabs.push(t.id)
       }
       chrome.tabs.onCreated.addListener(onCreated)
+      const before = await pageSignature(tabId)
       const result = await clickElement(tabId, ref).catch((err) => ({ ok: false, error: String(err) }))
       if (!result.ok) {
         chrome.tabs.onCreated.removeListener(onCreated)
@@ -538,6 +585,8 @@ export async function runAgent(
       }
       await waitForPageSettled(tabId)
       await new Promise((r) => setTimeout(r, 300))
+      // Forms and dialogs often appear a moment after the click: wait for the page to change.
+      const changed = newTabs.length > 0 || (await waitForPageChange(tabId, before))
       chrome.tabs.onCreated.removeListener(onCreated)
       update(step, { status: 'done' })
       if (newTabs.length > 0) {
@@ -549,7 +598,10 @@ export async function runAgent(
         await waitForPageSettled(tabId)
         return `Clicked ${ref} ("${info.label}"). It opened a new tab, which you are now working on.${await pageNow()}`
       }
-      return `Clicked ${ref} ("${info.label}").${await pageNow()}`
+      const unchanged = changed
+        ? ''
+        : ' The page did not visibly change after 5 seconds — it may still be loading, or the click did nothing. Do not click it again straight away: call wait, then read_page.'
+      return `Clicked ${ref} ("${info.label}").${unchanged}${await pageNow()}`
     }
 
     if (call.name === 'list_tabs') {
@@ -722,6 +774,29 @@ export async function runAgent(
       return notes.length ? notes.slice(0, 50).map((n) => `- (${new Date(n.at).toISOString().slice(0, 10)}) ${n.text}`).join('\n') : 'No saved notes.'
     }
 
+    if (call.name === 'upload_file') {
+      const wanted = String(call.args.file_name ?? '').trim().toLowerCase()
+      const file =
+        uploads.find((u) => u.name.toLowerCase() === wanted) ??
+        uploads.find((u) => wanted && (u.name.toLowerCase().includes(wanted) || wanted.includes(u.name.toLowerCase()))) ??
+        (uploads.length === 1 ? uploads[0] : undefined)
+      if (!file) {
+        newStep({ kind: 'fill', label: 'Upload a file', status: 'failed', error: uploads.length ? `No file called “${call.args.file_name}”.` : 'No files to upload.' })
+        return uploads.length
+          ? `Error: no file named "${call.args.file_name}". Files you can upload: ${uploads.map((u) => `"${u.name}"`).join(', ')}.`
+          : 'Error: the user has not shared any files that can be uploaded. Tell them which upload field is left for them.'
+      }
+      const step = newStep({ kind: 'fill', label: `Upload “${file.name}”`, status: 'running' })
+      const result = await uploadFile(tabId, ref, file).catch((err) => ({ ok: false, error: String(err), label: ref }))
+      if (!result.ok) {
+        update(step, { status: 'failed', error: result.error })
+        return `Error: ${result.error}`
+      }
+      update(step, { status: 'done', detail: result.label ? `into “${result.label}”` : undefined })
+      await new Promise((r) => setTimeout(r, 800))
+      return `Uploaded "${file.name}" into ${ref}. Check the page to confirm it shows the file.${await pageNow()}`
+    }
+
     if (call.name === 'ask_user') {
       const question = String(call.args.question ?? '').trim().slice(0, 6000)
       if (!question) return 'Error: give the question to ask.'
@@ -826,7 +901,7 @@ export async function runAgent(
       const keyRef = String(call.args.ref ?? '')
       // Enter can submit a form, so it gets the same care as a submit click.
       const currentUrl = (await chrome.tabs.get(tabId).catch(() => null))?.url
-      const needsApproval = key === 'Enter' && (mode === 'edit' || !siteAllowed(currentUrl, autoHosts()))
+      const needsApproval = key === 'Enter' && (mode === 'edit' || (!finalOnly && !siteAllowed(currentUrl, autoHosts())))
       const step = newStep({ kind: 'click', label: `Press ${key}`, status: needsApproval ? 'awaiting' : 'running' })
       if (needsApproval && !(await requestApproval(step))) {
         update(step, { status: 'denied' })

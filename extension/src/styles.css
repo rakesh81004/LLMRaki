@@ -108,6 +108,27 @@ button:disabled {
   background: var(--bg-hover);
   color: var(--text-primary);
 }
+.icon-button.active {
+  color: var(--accent);
+}
+
+/* Top of a pinned chat: what it remembers */
+.pinned-banner {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 12px;
+  color: var(--text-muted);
+  background: var(--bg-raised);
+}
+.pinned-banner strong {
+  color: var(--text-primary);
+}
+.pinned-banner-memory {
+  margin-top: 3px;
+  overflow-wrap: anywhere;
+}
 
 /* Messages */
 .messages {

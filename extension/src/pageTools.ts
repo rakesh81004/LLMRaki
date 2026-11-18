@@ -110,7 +110,9 @@ function snapshotInPage(maxText: number, maxElements: number): PageSnapshot {
   groups.forEach((selector, groupIndex) => {
     let linkCount = 0
     for (const el of Array.from(document.querySelectorAll(selector))) {
-      if (seen.has(el) || !isVisible(el)) continue
+      // Upload fields are usually hidden behind a styled button, so they're listed even when hidden.
+      const fileInput = el instanceof HTMLInputElement && el.type === 'file'
+      if (seen.has(el) || (!isVisible(el) && !fileInput)) continue
       if (elements.length >= maxElements || (groupIndex === 2 && linkCount >= linkCap)) {
         truncated = true
         break
@@ -128,7 +130,17 @@ function snapshotInPage(maxText: number, maxElements: number): PageSnapshot {
       const entry: PageElement = { ref, tag: el.tagName.toLowerCase(), label: labelOf(el) }
       const role = el.getAttribute('role')
       if (role) entry.type = role
-      if (el instanceof HTMLInputElement) {
+      if (fileInput) {
+        const input = el as HTMLInputElement
+        entry.type = 'file'
+        if (entry.label === input.tagName || entry.label === input.name || entry.label === input.id) {
+          // A hidden input's own name says little; the visible upload button or text next to it says more.
+          const near = clean(input.parentElement?.innerText || input.closest('div')?.innerText || '')
+          if (near) entry.label = near
+        }
+        entry.value = input.files && input.files.length ? Array.from(input.files).map((f) => f.name).join(', ') : ''
+        if (input.accept) entry.options = [input.accept]
+      } else if (el instanceof HTMLInputElement) {
         entry.type = el.type
         if (el.type === 'checkbox' || el.type === 'radio') entry.checked = el.checked
         else entry.value = isProtected(el) ? undefined : clean(el.value, 120)
@@ -187,6 +199,9 @@ function fillInPage(ref: string, value: string): FillResult {
     }
   }
   if ((el as HTMLInputElement).disabled) return { ok: false, label, error: `"${label}" is disabled.` }
+  if (el instanceof HTMLInputElement && el.type === 'file') {
+    return { ok: false, label, error: 'This is a file upload field — use upload_file to put one of the user’s files in it.' }
+  }
 
   el.scrollIntoView({ block: 'center', behavior: 'instant' as ScrollBehavior })
   const oldOutline = el.style.outline
@@ -255,6 +270,32 @@ function fillInPage(ref: string, value: string): FillResult {
   }
 
   return { ok: false, label, error: `"${label}" (${el.tagName.toLowerCase()}) isn't a field that can be filled. Use click instead.` }
+}
+
+// Puts a file (sent in as base64) into an <input type="file">, the way a drop or a file picker would.
+function uploadInPage(ref: string, name: string, mimeType: string, base64: string): FillResult {
+  const el = document.querySelector(`[data-llmraki-ref="${CSS.escape(ref)}"]`)
+  if (!el) return { ok: false, error: `Element ${ref} isn't on the page any more. Call read_page again.` }
+  if (!(el instanceof HTMLInputElement) || el.type !== 'file') {
+    return { ok: false, error: `${ref} isn't a file upload field. Use the ref of the input with type "file" from read_page.` }
+  }
+  const label = (el.getAttribute('aria-label') || el.labels?.[0]?.textContent || el.parentElement?.innerText || el.name || 'file upload')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 60)
+  try {
+    const binary = atob(base64)
+    const bytes = new Uint8Array(binary.length)
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+    const transfer = new DataTransfer()
+    transfer.items.add(new File([bytes], name, { type: mimeType, lastModified: Date.now() }))
+    el.files = transfer.files
+    el.dispatchEvent(new Event('input', { bubbles: true }))
+    el.dispatchEvent(new Event('change', { bubbles: true }))
+  } catch (err) {
+    return { ok: false, label, error: `The file couldn't be attached: ${err instanceof Error ? err.message : String(err)}` }
+  }
+  return el.files && el.files.length > 0 ? { ok: true, label } : { ok: false, label, error: 'The page did not accept the file.' }
 }
 
 function inspectClickInPage(ref: string): ClickInfo {
@@ -331,11 +372,40 @@ export const snapshotPage = (tabId: number): Promise<PageSnapshot> => run(tabId,
 export const fillField = (tabId: number, ref: string, value: string): Promise<FillResult> =>
   run(tabId, fillInPage, [ref, value])
 export const inspectClick = (tabId: number, ref: string): Promise<ClickInfo> => run(tabId, inspectClickInPage, [ref])
+export const uploadFile = (tabId: number, ref: string, file: { name: string; mimeType: string; data: string }): Promise<FillResult> =>
+  run(tabId, uploadInPage, [ref, file.name, file.mimeType, file.data])
 export const clickElement = (tabId: number, ref: string): Promise<ClickInfo> => run(tabId, clickInPage, [ref])
 export const scrollPage = (tabId: number, direction: string): Promise<ScrollResult> => run(tabId, scrollInPage, [direction])
 export const pressKey = (tabId: number, ref: string, key: string): Promise<ClickInfo> => run(tabId, pressKeyInPage, [ref, key])
 
 // A click can start a navigation; give the new page a moment to load before the next read.
+// A cheap fingerprint of what's on screen, to tell whether a click changed anything.
+function signatureInPage(): string {
+  const body = document.body
+  const controls = document.querySelectorAll('input, select, textarea, button, [role="dialog"], [aria-modal="true"]').length
+  const toggled = document.querySelectorAll('input:checked, [aria-checked="true"], [aria-expanded="true"], [aria-selected="true"]').length
+  return `${location.href}|${body ? body.innerText.length : 0}|${controls}|${toggled}`
+}
+
+export const pageSignature = (tabId: number): Promise<string | null> => run(tabId, signatureInPage, []).catch(() => null)
+
+// After a click: waits until the page shows a change (a form or dialog that appears a moment
+// later, the next step of a form…), for up to `maxMs`. Resolves whether it changed.
+export async function waitForPageChange(tabId: number, before: string | null, maxMs = 5000): Promise<boolean> {
+  if (before === null) return true
+  const end = Date.now() + maxMs
+  while (Date.now() < end) {
+    const now = await pageSignature(tabId)
+    if (now !== before) {
+      // Let whatever is appearing finish rendering before it's read.
+      await new Promise((r) => setTimeout(r, 500))
+      return true
+    }
+    await new Promise((r) => setTimeout(r, 400))
+  }
+  return false
+}
+
 export async function waitForPageSettled(tabId: number): Promise<void> {
   await new Promise((r) => setTimeout(r, 600))
   for (let i = 0; i < 20; i++) {
